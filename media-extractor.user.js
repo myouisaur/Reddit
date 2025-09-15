@@ -2,7 +2,7 @@
 // @name         [Reddit] Media Extractor
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.redditstatic.com/desktop2x/img/favicon/favicon-96x96.png
-// @version      1.5
+// @version      1.6
 // @description  Adds buttons to Reddit posts to open or download the highest resolution images and videos. Works best for single media posts. Adaptive streams and galleries are labeled with warnings or fall back to open-only.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -349,5 +349,4 @@
         }
     }, 1000);
 
-    console.log('Reddit Media Extractor loaded successfully!');
 })();
