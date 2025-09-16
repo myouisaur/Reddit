@@ -2,7 +2,7 @@
 // @name         [Reddit] Media Extractor
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.redditstatic.com/desktop2x/img/favicon/favicon-96x96.png
-// @version      1.6
+// @version      1.7
 // @description  Adds buttons to Reddit posts to open or download the highest resolution images and videos. Works best for single media posts. Adaptive streams and galleries are labeled with warnings or fall back to open-only.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -20,36 +20,29 @@
             top: 8px !important;
             right: 8px !important;
             display: flex !important;
-            gap: 4px;
-            z-index: 9999 !important;
+            gap: 6px;
+            z-index: 999999 !important;
+            opacity: 1;
+            pointer-events: auto;
         }
         .reddit-highres-btn {
-            width: 32px;
-            height: 32px;
-            background: rgba(0, 0, 0, 0.8);
-            backdrop-filter: blur(8px);
+            width: 36px;
+            height: 36px;
+            background: rgba(0,0,0,0.4);
+            backdrop-filter: blur(6px);
             color: white;
-            border-radius: 6px;
+            border-radius: 10px;
             cursor: pointer;
-            border: 1px solid rgba(255, 255, 255, 0.3);
+            border: 1px solid rgba(255,255,255,0.1);
             display: flex !important;
             align-items: center;
             justify-content: center;
+            font-size: 15px;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.2);
+            transition: transform 0.12s ease, opacity 0.12s ease;
             user-select: none;
             pointer-events: auto !important;
-            transition: all 0.2s ease;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            font-size: 14px;
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
             flex-shrink: 0;
-        }
-        .reddit-highres-btn:hover {
-            background: rgba(0, 0, 0, 0.9);
-            transform: scale(1.05);
-        }
-        .reddit-highres-btn:active {
-            opacity: 0.8;
-            transform: scale(0.95);
         }
     `;
 
