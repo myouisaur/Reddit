@@ -2,8 +2,8 @@
 // @name         [Reddit] Media Extractor
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.redditstatic.com/desktop2x/img/favicon/favicon-96x96.png
-// @version      1.7
-// @description  Adds buttons to Reddit posts to open or download the highest resolution images and videos. Works best for single media posts. Adaptive streams and galleries are labeled with warnings or fall back to open-only.
+// @version      1.9
+// @description  Adds buttons to Reddit posts to open or download the highest resolution images and videos.
 // @author       Xiv
 // @match        *://*.reddit.com/*
 // @grant        GM_addStyle
@@ -20,10 +20,8 @@
             top: 8px !important;
             right: 8px !important;
             display: flex !important;
-            gap: 6px;
-            z-index: 999999 !important;
-            opacity: 1;
-            pointer-events: auto;
+            gap: 4px;
+            z-index: 9999 !important;
         }
         .reddit-highres-btn {
             width: 36px;
@@ -40,21 +38,34 @@
             font-size: 15px;
             box-shadow: 0 6px 18px rgba(0,0,0,0.2);
             transition: transform 0.12s ease, opacity 0.12s ease;
-            user-select: none;
-            pointer-events: auto !important;
-            flex-shrink: 0;
+        }
+        .reddit-highres-btn:hover {
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(12px);
+            border: 1.5px solid rgba(255, 255, 255, 0.3);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+        .reddit-highres-btn:active {
+            transform: scale(0.95);
+            opacity: 0.9;
         }
     `;
 
     GM_addStyle(BUTTON_CSS);
 
-    function generateRandomString(length) {
+    function generateRandomString(length = 15) {
         const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
         let result = '';
         for (let i = 0; i < length; i++) {
             result += chars.charAt(Math.floor(Math.random() * chars.length));
         }
         return result;
+    }
+
+    function getResolution(element) {
+        const w = element.naturalWidth || element.videoWidth || element.offsetWidth || 0;
+        const h = element.naturalHeight || element.videoHeight || element.offsetHeight || 0;
+        return `${w}x${h}`;
     }
 
     function getHighestResImage(img) {
@@ -189,20 +200,21 @@
     function getMediaInfo(element) {
         const isVideo = element.tagName === 'VIDEO';
         const randomStr = generateRandomString(15);
+        const resolution = getResolution(element);
 
         if (isVideo) {
             const url = getHighestResVideo(element);
             if (isAdaptiveStream(url)) {
                 return {
                     type: 'video',
-                    filename: `reddit-video-${randomStr}.m3u8`,
+                    filename: `reddit-video-${resolution}-${randomStr}.m3u8`,
                     url: url,
                     adaptive: true
                 };
             }
             return {
                 type: 'video',
-                filename: `reddit-video-${randomStr}.mp4`,
+                filename: `reddit-video-${resolution}-${randomStr}.mp4`,
                 url: url,
                 adaptive: false
             };
@@ -216,7 +228,7 @@
 
             return {
                 type: 'image',
-                filename: `reddit-image-${randomStr}.${extension}`,
+                filename: `reddit-image-${resolution}-${randomStr}.${extension}`,
                 url: url,
                 adaptive: false
             };
@@ -234,6 +246,60 @@
             return;
         }
 
+        // Convert to highest quality JPG for images
+        if (filename.includes('.jpg') || filename.includes('.png') || filename.includes('.webp') || filename.includes('.jpeg')) {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+
+            img.onload = function() {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                canvas.width = img.naturalWidth || img.width;
+                canvas.height = img.naturalHeight || img.height;
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(img, 0, 0);
+                canvas.toBlob(function(blob) {
+                    if (blob) {
+                        const link = document.createElement('a');
+                        link.href = URL.createObjectURL(blob);
+                        link.download = filename.replace(/\.(png|webp|jpg|jpeg)$/i, '.jpg');
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                        URL.revokeObjectURL(link.href);
+                    } else {
+                        window.open(url, '_blank', 'noopener,noreferrer');
+                    }
+                }, 'image/jpeg', 1.0);
+            };
+
+            img.onerror = function() {
+                fetch(url)
+                    .then(response => {
+                        if (!response.ok) throw new Error('Network response was not ok');
+                        return response.blob();
+                    })
+                    .then(blob => {
+                        const link = document.createElement('a');
+                        link.href = URL.createObjectURL(blob);
+                        link.download = filename;
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                        URL.revokeObjectURL(link.href);
+                    })
+                    .catch(error => {
+                        console.log('Download failed, opening in new tab instead:', error);
+                        window.open(url, '_blank', 'noopener,noreferrer');
+                    });
+            };
+
+            img.src = url;
+            return;
+        }
+
+        // For videos and other files
         fetch(url)
             .then(response => {
                 if (!response.ok) throw new Error('Network response was not ok');
