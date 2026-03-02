@@ -2,341 +2,173 @@
 // @name         [Reddit] Media Extractor
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.redditstatic.com/desktop2x/img/favicon/favicon-96x96.png
-// @version      2.1
-// @description  Adds buttons to Reddit posts to open or download the highest resolution images and videos (preserves JPG, converts PNG/WEBP to JPG). Filters out thumbnails, avatars, and UI icons.
+// @version      3.6
+// @description  Adds buttons to Reddit posts to open or download the highest resolution images and videos.
 // @author       Xiv
 // @match        *://*.reddit.com/*
 // @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
+// @connect      redd.it
+// @connect      redditmedia.com
+// @connect      imgur.com
+// @connect      redgifs.com
+// @run-at       document-start
 // @updateURL    https://myouisaur.github.io/Reddit/media-extractor.user.js
 // @downloadURL  https://myouisaur.github.io/Reddit/media-extractor.user.js
 // ==/UserScript==
 
-(function() {
-    'use strict';
+(function () {
+  'use strict';
 
-    const BUTTON_CSS = `
-        .reddit-btn-container {
-            position: absolute !important;
-            top: 8px !important;
-            right: 8px !important;
-            display: flex !important;
-            gap: 4px;
-            z-index: 9999 !important;
-        }
-        .reddit-highres-btn {
-            width: 36px;
-            height: 36px;
-            background: rgba(0,0,0,0.4);
-            backdrop-filter: blur(6px);
-            color: white;
-            border-radius: 10px;
-            cursor: pointer;
-            border: 1px solid rgba(255,255,255,0.1);
-            display: flex !important;
-            align-items: center;
-            justify-content: center;
-            font-size: 15px;
-            box-shadow: 0 6px 18px rgba(0,0,0,0.2);
-            transition: transform 0.12s ease, opacity 0.12s ease;
-        }
-        .reddit-highres-btn:hover {
-            background: rgba(0, 0, 0, 0.6);
-            backdrop-filter: blur(12px);
-            border: 1.5px solid rgba(255, 255, 255, 0.3);
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-        }
-        .reddit-highres-btn:active {
-            transform: scale(0.95);
-            opacity: 0.9;
-        }
-    `;
+  // 1. UI STYLING
+  GM_addStyle(`
+    .xiv-container {
+      position: absolute !important;
+      top: 10px !important;
+      right: 10px !important;
+      display: flex !important;
+      gap: 6px;
+      z-index: 2147483647 !important;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+    .xiv-wrap:hover > .xiv-container, .xiv-container:hover {
+      opacity: 1 !important;
+      pointer-events: auto !important;
+    }
+    .xiv-btn {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex !important;
+      align-items: center;
+      justify-content: center;
+      background: rgba(15, 20, 25, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: white;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      pointer-events: auto !important;
+    }
+    .xiv-btn:hover { background: rgba(255, 69, 0, 1); transform: scale(1.1); }
+    .xiv-btn svg { width: 18px; height: 18px; fill: currentColor; }
+  `);
 
-    GM_addStyle(BUTTON_CSS);
+  const icons = {
+    open: '<svg viewBox="0 0 24 24"><path d="M19 19H5V5h7V3H5a2 2 0 00-2 2v14a2 2 0 002 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>',
+    dl: '<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>',
+    vid: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>'
+  };
 
-    function generateRandomString(length = 15) {
-        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-        return Array.from({ length }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  // 2. CORE UTILS
+  function download(url, name) {
+    if (!url || url.startsWith('blob:')) return;
+
+    // Safety check for 3rd party restriction
+    if (url.includes('redgifs.com')) {
+        alert("Direct download restricted by RedGifs. Opening their high-res player for you...");
+        window.open(url, '_blank');
+        return;
     }
 
-    function getResolution(element) {
-        const w = element.naturalWidth || element.videoWidth || element.offsetWidth || 0;
-        const h = element.naturalHeight || element.videoHeight || element.offsetHeight || 0;
-        return `${w}x${h}`;
-    }
+    GM_xmlhttpRequest({
+      method: 'GET', url: url, responseType: 'blob',
+      onload: (res) => {
+        const bUrl = window.URL.createObjectURL(res.response);
+        const a = document.createElement('a');
+        a.href = bUrl; a.download = name;
+        a.click(); window.URL.revokeObjectURL(bUrl);
+      }
+    });
+  }
 
-    function getHighestResImage(img) {
-        let bestUrl = img.src;
-        if (img.srcset) {
-            const sources = img.srcset.split(',')
-                .map(s => {
-                    const [url, width] = s.trim().split(' ');
-                    return { url: url.trim(), width: parseInt(width) || 0 };
-                })
-                .sort((a, b) => b.width - a.width);
-            if (sources.length > 0 && sources[0].url) bestUrl = sources[0].url;
+  function getCleanImgUrl(url) {
+    if (!url) return '';
+    if (url.includes('preview.redd.it')) return url.split('?')[0].replace('preview.redd.it', 'i.redd.it');
+    return url;
+  }
+
+  // 3. INJECTION
+  function inject(el, type, url) {
+    const parent = el.parentElement;
+    if (!parent || parent.querySelector('.xiv-container')) return;
+
+    parent.classList.add('xiv-wrap');
+    if (getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
+
+    const container = document.createElement('div');
+    container.className = 'xiv-container';
+
+    const openBtn = document.createElement('div');
+    openBtn.className = 'xiv-btn';
+    openBtn.innerHTML = type === 'video' ? icons.vid : icons.open;
+    openBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); window.open(url, '_blank'); };
+
+    const dlBtn = document.createElement('div');
+    dlBtn.className = 'xiv-btn';
+    dlBtn.innerHTML = icons.dl;
+    dlBtn.onclick = (e) => {
+      e.preventDefault(); e.stopPropagation();
+      download(url, `reddit_${Date.now()}.${type === 'video' ? 'mp4' : 'jpg'}`);
+    };
+
+    container.appendChild(openBtn);
+    container.appendChild(dlBtn);
+    parent.appendChild(container);
+  }
+
+  // 4. SCANNER
+  function scan() {
+    // A. Photos (Fast check)
+    document.querySelectorAll('img:not(.xiv-checked)').forEach(img => {
+      const src = img.src;
+      if (!src || src.includes('avatar') || img.width < 150) return;
+      img.classList.add('xiv-checked'); // Prevent re-scanning
+      if (src.includes('redd.it') || src.includes('redditmedia.com') || src.includes('imgur.com')) {
+        inject(img, 'image', getCleanImgUrl(src));
+      }
+    });
+
+    // B. Videos (Shadow DOM & Fast Tracking)
+    const players = document.querySelectorAll('shreddit-player, video, iframe[src*="redgifs"]');
+
+    players.forEach(p => {
+      let vUrl = '';
+
+      if (p.tagName === 'SHREDDIT-PLAYER') {
+        vUrl = p.getAttribute('src') || p.getAttribute('packaged-video');
+        if (vUrl && vUrl.includes('.m3u8')) {
+           vUrl = vUrl.split('HLSPlaylist.m3u8')[0] + 'DASH_720.mp4?source=fallback';
         }
-        if (bestUrl.includes('preview.redd.it')) {
-            bestUrl = bestUrl.replace('preview.redd.it', 'i.redd.it');
-        }
-        if (bestUrl.includes('i.redd.it') || bestUrl.includes('preview.redd.it')) {
-            const url = new URL(bestUrl);
-            url.searchParams.delete('width');
-            url.searchParams.delete('height');
-            url.searchParams.delete('crop');
-            url.searchParams.delete('auto');
-            url.searchParams.delete('s');
-            const newParams = new URLSearchParams();
-            if (url.searchParams.has('format')) {
-                newParams.set('format', url.searchParams.get('format'));
-            }
-            bestUrl = url.origin + url.pathname + (newParams.toString() ? '?' + newParams.toString() : '');
-        }
-        if (bestUrl.includes('imgur.com') && !bestUrl.includes('/gallery/')) {
-            bestUrl = bestUrl.replace(/\/(\w+)[sml]\./, '/$1.');
-        }
-        return bestUrl;
-    }
+      } else if (p.tagName === 'VIDEO') {
+        vUrl = p.src || p.querySelector('source')?.src;
+      } else if (p.tagName === 'IFRAME' && p.src.includes('redgifs')) {
+        // Fix RedGifs: Open the watch page instead of the iframe embed
+        vUrl = p.src.replace('ifr/', 'watch/').split('?')[0];
+      }
 
-    function getHighestResVideo(video) {
-        const sources = video.querySelectorAll('source');
-        if (sources.length > 0) {
-            for (let source of sources) {
-                if (source.src && (source.src.includes('1080') || source.src.includes('720'))) {
-                    return source.src;
-                }
-            }
-            return sources[0].src;
-        }
-        return video.src || video.currentSrc;
-    }
+      if (vUrl && !vUrl.startsWith('blob:')) {
+        inject(p, 'video', vUrl);
+      }
+    });
+  }
 
-    function isAdaptiveStream(url) {
-        return url && (url.includes('.m3u8') || url.includes('.mpd'));
-    }
+  // 5. OBSERVER (Higher frequency for videos)
+  let timer;
+  const observer = new MutationObserver(() => {
+    clearTimeout(timer);
+    timer = setTimeout(scan, 200); // Reduced from 400ms to 200ms for speed
+  });
 
-    // ✅ Filter: skip thumbnails, avatars, UI icons
-    function isRedditPostMedia(element) {
-        const src = element.src || element.currentSrc || '';
-        if (!src) return false;
-
-        // Skip obvious UI/avatars/emojis
-        if (src.includes('redditstatic.com') ||
-            src.includes('/styles/') ||
-            src.includes('/avatars/') ||
-            src.includes('emoji') ||
-            src.endsWith('.svg') ||
-            src.startsWith('data:')) {
-            return false;
-        }
-
-        // Skip thumbnails (small images inside preview containers)
-        if ((element.naturalWidth && element.naturalWidth <= 320) ||
-            (element.naturalHeight && element.naturalHeight <= 320)) {
-            if (element.closest('[data-testid*="post-preview"]') ||
-                element.closest('[data-testid*="thumbnail"]') ||
-                element.closest('.thumbnail') ||
-                element.closest('[class*="thumbnail"]')) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    function getMediaInfo(element) {
-        const isVideo = element.tagName === 'VIDEO';
-        const randomStr = generateRandomString(15);
-        const resolution = getResolution(element);
-
-        if (isVideo) {
-            const url = getHighestResVideo(element);
-            if (isAdaptiveStream(url)) {
-                return {
-                    type: 'video',
-                    filename: `reddit-video-${resolution}-${randomStr}.m3u8`,
-                    url: url,
-                    adaptive: true
-                };
-            }
-            return {
-                type: 'video',
-                filename: `reddit-video-${resolution}-${randomStr}.mp4`,
-                url: url,
-                adaptive: false
-            };
-        } else {
-            let url = getHighestResImage(element);
-            let extension = 'jpg';
-            if (url.includes('.png')) extension = 'png';
-            else if (url.includes('.gif')) extension = 'gif';
-            else if (url.includes('.webp')) extension = 'webp';
-            else if (url.includes('.jpeg')) extension = 'jpeg';
-
-            return {
-                type: 'image',
-                filename: `reddit-image-${resolution}-${randomStr}.${extension}`,
-                url: url,
-                adaptive: false
-            };
-        }
-    }
-
-    function downloadMedia(url, filename, adaptive=false) {
-        if (adaptive) {
-            alert('⚠ This video uses adaptive streaming. Use external tools like yt-dlp or VLC with the opened URL.');
-            window.open(url, '_blank', 'noopener,noreferrer');
-            return;
-        }
-
-        // Direct download for JPG/JPEG/GIF
-        if (/\.(jpg|jpeg|gif)$/i.test(filename)) {
-            return fetch(url)
-                .then(r => r.ok ? r.blob() : Promise.reject())
-                .then(blob => {
-                    const link = document.createElement('a');
-                    link.href = URL.createObjectURL(blob);
-                    link.download = filename;
-                    document.body.appendChild(link);
-                    link.click();
-                    document.body.removeChild(link);
-                    URL.revokeObjectURL(link.href);
-                })
-                .catch(() => window.open(url, '_blank', 'noopener,noreferrer'));
-        }
-
-        // Convert PNG/WEBP → JPG
-        if (/\.(png|webp)$/i.test(filename)) {
-            const img = new Image();
-            img.crossOrigin = 'anonymous';
-            img.onload = function() {
-                const canvas = document.createElement('canvas');
-                const ctx = canvas.getContext('2d');
-                canvas.width = img.naturalWidth || img.width;
-                canvas.height = img.naturalHeight || img.height;
-                ctx.fillStyle = '#FFFFFF';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                ctx.drawImage(img, 0, 0);
-                canvas.toBlob(function(blob) {
-                    if (blob) {
-                        const link = document.createElement('a');
-                        link.href = URL.createObjectURL(blob);
-                        link.download = filename.replace(/\.(png|webp)$/i, '.jpg');
-                        document.body.appendChild(link);
-                        link.click();
-                        document.body.removeChild(link);
-                        URL.revokeObjectURL(link.href);
-                    } else {
-                        window.open(url, '_blank', 'noopener,noreferrer');
-                    }
-                }, 'image/jpeg', 0.92);
-            };
-            img.onerror = () => window.open(url, '_blank', 'noopener,noreferrer');
-            img.src = url;
-            return;
-        }
-
-        // Fallback (videos/others)
-        fetch(url)
-            .then(r => r.ok ? r.blob() : Promise.reject())
-            .then(blob => {
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(blob);
-                link.download = filename;
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                URL.revokeObjectURL(link.href);
-            })
-            .catch(() => window.open(url, '_blank', 'noopener,noreferrer'));
-    }
-
-    function removeOldButtons() {
-        document.querySelectorAll('.reddit-btn-container').forEach(c => c.remove());
-    }
-
-    function addMediaButtons() {
-        removeOldButtons();
-        const mediaElements = document.querySelectorAll('img, video');
-        let buttonsAdded = 0;
-
-        mediaElements.forEach(element => {
-            if (!isRedditPostMedia(element)) return;
-
-            const parent = element.parentElement;
-            if (!parent) return;
-            if (parent.querySelector('.reddit-btn-container')) return;
-
-            if (!/relative|absolute|fixed|sticky/i.test(getComputedStyle(parent).position)) {
-                parent.style.position = 'relative';
-            }
-
-            const mediaInfo = getMediaInfo(element);
-            if (!mediaInfo.url || mediaInfo.url === 'about:blank') return;
-
-            const container = document.createElement('div');
-            container.className = 'reddit-btn-container';
-
-            const openButton = document.createElement('div');
-            openButton.textContent = '🔗';
-            openButton.className = 'reddit-highres-btn';
-            openButton.title = `Open original ${mediaInfo.type} (highest resolution)`;
-            openButton.addEventListener('mousedown', e => {
-                e.stopPropagation();
-                e.preventDefault();
-                const currentMediaInfo = getMediaInfo(element);
-                window.open(currentMediaInfo.url, '_blank', 'noopener,noreferrer');
-            });
-
-            const downloadButton = document.createElement('div');
-            downloadButton.textContent = mediaInfo.adaptive ? '⚠' : '⬇';
-            downloadButton.className = 'reddit-highres-btn';
-            downloadButton.title = mediaInfo.adaptive ?
-                'Adaptive stream: open manifest (.m3u8/.mpd) for yt-dlp/VLC' :
-                `Download highest resolution ${mediaInfo.type}`;
-            downloadButton.addEventListener('mousedown', e => {
-                e.stopPropagation();
-                e.preventDefault();
-                const currentMediaInfo = getMediaInfo(element);
-                downloadMedia(currentMediaInfo.url, currentMediaInfo.filename, currentMediaInfo.adaptive);
-            });
-
-            container.appendChild(openButton);
-            container.appendChild(downloadButton);
-            parent.appendChild(container);
-
-            buttonsAdded++;
-        });
-
-        console.log(`Added buttons to ${buttonsAdded} media elements`);
-    }
-
-    let debounceTimer = null;
-    function debouncedAddButtons() {
-        if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(addMediaButtons, 200);
-    }
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', debouncedAddButtons);
-    } else {
-        debouncedAddButtons();
-    }
-
-    window.addEventListener('load', () => setTimeout(debouncedAddButtons, 500));
-    setTimeout(debouncedAddButtons, 1000);
-    setTimeout(debouncedAddButtons, 2000);
-    setTimeout(debouncedAddButtons, 3000);
-
-    const observer = new MutationObserver(debouncedAddButtons);
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      observer.observe(document.body, { childList: true, subtree: true });
+      scan();
+    });
+  } else {
     observer.observe(document.body, { childList: true, subtree: true });
-
-    let currentPath = window.location.pathname;
-    setInterval(() => {
-        if (window.location.pathname !== currentPath) {
-            currentPath = window.location.pathname;
-            removeOldButtons();
-            setTimeout(debouncedAddButtons, 500);
-        }
-    }, 1000);
-
+    scan();
+  }
 })();
