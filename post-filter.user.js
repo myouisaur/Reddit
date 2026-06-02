@@ -2,15 +2,16 @@
 // @name         [Reddit] Post Filter
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      2.3
-// @description  Filters Reddit posts based on scores, keywords, flairs, dates, and post types with a clean, progressive interface.
+// @version      2.5
+// @description  Filters Reddit posts.
 // @author       Xiv
-// @match        *://*.reddit.com/*
+// @match        *://old.reddit.com/*
+// @match        *://www.reddit.com/*
 // @noframes
-// @updateURL    https://myouisaur.github.io/Reddit/post-filter.user.js
-// @downloadURL  https://myouisaur.github.io/Reddit/post-filter.user.js
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @updateURL    https://myouisaur.github.io/Reddit/post-filter.user.js
+// @downloadURL  https://myouisaur.github.io/Reddit/post-filter.user.js
 // ==/UserScript==
 
 (function () {
@@ -58,7 +59,6 @@
         flairs: '',
         highlightThreshold: null,
 
-        isPanelOpen: true,
         isAdvancedOpen: false,
         totalPosts: 0,
         visiblePosts: 0,
@@ -130,7 +130,6 @@
         try {
             const saved = GM_getValue(CONFIG.STORAGE_KEY, '{}');
             const parsed = JSON.parse(saved);
-            state.isPanelOpen = parsed.isPanelOpen !== false;
             state.isAdvancedOpen = parsed.isAdvancedOpen === true;
         } catch (e) {
             console.warn('[Reddit Filter] Failed to parse stored state, using defaults.');
@@ -140,7 +139,6 @@
     function saveState() {
         try {
             GM_setValue(CONFIG.STORAGE_KEY, JSON.stringify({
-                isPanelOpen: state.isPanelOpen,
                 isAdvancedOpen: state.isAdvancedOpen
             }));
         } catch (e) {
@@ -380,17 +378,7 @@
         document.addEventListener('keydown', (e) => {
             if (e.altKey && e.key.toLowerCase() === 'f') {
                 e.preventDefault();
-                const panelBody = document.getElementById('tm-raf-body');
-                const arrowIcon = document.getElementById('tm-raf-arrow');
                 const minInput = document.getElementById('tm-raf-min-score');
-
-                if (!state.isPanelOpen) {
-                    state.isPanelOpen = true;
-                    panelBody.classList.remove('hidden');
-                    if(arrowIcon) arrowIcon.textContent = '▼';
-                    saveState();
-                }
-
                 if (minInput) minInput.focus();
             }
         });
@@ -403,79 +391,27 @@
     function injectStyles() {
         if (document.getElementById('tm-raf-styles')) return;
         const css = `
+            /* Bulletproof Hiding */
             .tm-raf-hidden,
             .tm-raf-hidden + .child,
             .tm-raf-hidden + .child + .clearleft,
             .tm-raf-hidden + .clearleft {
                 display: none !important;
             }
+
+            /* Highlighting */
             .tm-raf-highlight {
-                border-left: 4px solid #ffd700 !important;
-                background-color: #fffbdd !important;
+                border-left: 4px solid rgba(255, 215, 0, 0.8) !important;
+                background-color: rgba(255, 215, 0, 0.1) !important;
                 border-radius: 3px;
                 padding-left: 8px !important;
             }
-            .tm-raf-container {
-                background-color: #eff7ff;
-                border: 1px solid #c8c8c8;
-                border-radius: 0.2rem;
-                margin-bottom: 1rem;
-                font-family: verdana, arial, helvetica, sans-serif;
-                overflow: hidden;
-            }
-            .tm-raf-toggle-header {
-                padding: clamp(0.5rem, 1vw, 0.75rem);
-                cursor: pointer;
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                font-size: 0.85rem;
-                font-weight: bold;
-                color: #336699;
-                user-select: none;
-                transition: background-color 0.2s;
-            }
-            .tm-raf-toggle-header:hover, .tm-raf-toggle-header:focus {
-                background-color: #e0f0ff;
-                outline: none;
-            }
-            .tm-raf-toggle-header:focus-visible {
-                box-shadow: inset 0 0 0 2px #336699;
-            }
-            .tm-raf-header-left {
-                display: flex;
-                align-items: center;
-                gap: 0.5rem;
-            }
-            .tm-raf-indicator {
-                width: 8px;
-                height: 8px;
-                border-radius: 50%;
-                background-color: #28a745;
-                opacity: 0;
-                transition: opacity 0.2s ease;
-            }
-            .tm-raf-indicator.active {
-                opacity: 1;
-            }
-            .tm-raf-arrow {
-                transition: transform 0.2s ease;
-                font-size: 0.7rem;
-                color: #888;
-            }
-            .tm-raf-body {
-                padding: 0 clamp(0.5rem, 1vw, 0.75rem) clamp(0.5rem, 1vw, 0.75rem);
-                display: flex;
-                flex-direction: column;
-                border-top: 1px solid #e0e0e0;
-            }
-            .tm-raf-body.hidden {
-                display: none;
-            }
+
+            /* Layout Structure */
             .tm-raf-section {
                 padding-bottom: 0.75rem;
                 margin-bottom: 0.75rem;
-                border-bottom: 1px dashed #d8d8d8;
+                border-bottom: 1px dashed rgba(128, 128, 128, 0.3);
             }
             .tm-raf-section:last-child {
                 border-bottom: none;
@@ -501,54 +437,41 @@
                 margin-bottom: 0.75rem;
                 gap: 0.25rem;
             }
+
+            /* Typography & Inputs */
             .tm-raf-label {
                 font-size: 0.75rem;
                 font-weight: 600;
-                color: #444;
+                opacity: 0.8;
                 white-space: nowrap;
             }
             .tm-raf-input, .tm-raf-select {
                 padding: 0.4rem 0.5rem;
-                border: 1px solid #c8c8c8;
+                border: 1px solid rgba(128, 128, 128, 0.3);
                 border-radius: 0.2rem;
                 font-size: 0.8rem;
                 width: 100%;
                 box-sizing: border-box;
                 font-family: inherit;
-                background: #ffffff;
-                color: #333;
+                background-color: transparent;
+                color: inherit;
                 transition: border-color 0.2s, box-shadow 0.2s;
             }
             .tm-raf-input:focus, .tm-raf-select:focus {
                 outline: none;
-                border-color: #336699;
-                box-shadow: 0 0 0 2px rgba(51, 102, 153, 0.2);
+                border-color: rgba(128, 128, 128, 0.8);
+                box-shadow: 0 0 0 2px rgba(128, 128, 128, 0.2);
             }
+
+            @media (prefers-color-scheme: dark) {
+                .tm-raf-input[type="date"]::-webkit-calendar-picker-indicator {
+                    filter: invert(1);
+                }
+            }
+
             .tm-raf-input-error {
                 border-color: #d22 !important;
-                background-color: #fff0f0 !important;
-            }
-            .tm-raf-advanced-toggle {
-                font-size: 0.75rem;
-                color: #336699;
-                cursor: pointer;
-                text-align: center;
-                padding: 0.4rem 0;
-                font-weight: 600;
-                user-select: none;
-                border-radius: 0.2rem;
-                transition: background-color 0.2s;
-                margin-bottom: 0.5rem;
-            }
-            .tm-raf-advanced-toggle:hover, .tm-raf-advanced-toggle:focus {
-                background-color: #e0f0ff;
-                outline: none;
-            }
-            .tm-raf-advanced-container {
-                display: none;
-            }
-            .tm-raf-advanced-container.open {
-                display: block;
+                background-color: rgba(221, 34, 34, 0.1) !important;
             }
             .tm-raf-checkbox-row {
                 display: flex;
@@ -557,9 +480,46 @@
             }
             .tm-raf-checkbox-row label {
                 font-size: 0.8rem;
-                color: #444;
                 cursor: pointer;
+                opacity: 0.9;
             }
+
+            /* Interactive Elements */
+            .tm-raf-indicator {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background-color: #28a745;
+                opacity: 0;
+                transition: opacity 0.2s ease;
+            }
+            .tm-raf-indicator.active {
+                opacity: 1;
+            }
+            .tm-raf-advanced-toggle {
+                font-size: 0.75rem;
+                cursor: pointer;
+                text-align: center;
+                padding: 0.4rem 0;
+                font-weight: 600;
+                user-select: none;
+                border-radius: 0.2rem;
+                transition: background-color 0.2s;
+                margin-bottom: 0.5rem;
+                opacity: 0.8;
+            }
+            .tm-raf-advanced-toggle:hover, .tm-raf-advanced-toggle:focus {
+                background-color: rgba(128, 128, 128, 0.1);
+                outline: none;
+            }
+            .tm-raf-advanced-container {
+                display: none;
+            }
+            .tm-raf-advanced-container.open {
+                display: block;
+            }
+
+            /* Footer & States */
             .tm-raf-footer {
                 display: flex;
                 justify-content: space-between;
@@ -568,7 +528,7 @@
             }
             .tm-raf-stats {
                 font-size: 0.75rem;
-                color: #888;
+                opacity: 0.6;
             }
             .tm-raf-reset {
                 background: transparent;
@@ -590,9 +550,6 @@
                 text-decoration: underline;
             }
             .tm-raf-empty-state {
-                background-color: #eff7ff;
-                border: 1px solid #c8c8c8;
-                border-radius: 0.25rem;
                 padding: 2rem;
                 text-align: center;
                 margin-bottom: 1rem;
@@ -600,35 +557,23 @@
                 flex-direction: column;
                 align-items: center;
                 gap: 0.75rem;
+                border: 2px dashed rgba(128, 128, 128, 0.3);
+                border-radius: 4px;
+                background-color: transparent;
             }
             .tm-raf-empty-state h3 {
                 margin: 0;
-                color: #336699;
                 font-size: 1.1rem;
+                opacity: 0.9;
             }
             .tm-raf-empty-state p {
                 margin: 0;
-                color: #555;
                 font-size: 0.85rem;
-            }
-            .tm-raf-empty-state button {
-                margin-top: 0.5rem;
-                padding: 0.4rem 0.8rem;
-                background: #336699;
-                color: white;
-                border: none;
-                border-radius: 0.2rem;
-                cursor: pointer;
-                font-weight: bold;
-                font-size: 0.8rem;
-                transition: background-color 0.2s;
-            }
-            .tm-raf-empty-state button:hover {
-                background: #1f4266;
+                opacity: 0.7;
             }
             .tm-raf-hint {
                 font-size: 0.65rem;
-                color: #888;
+                opacity: 0.6;
                 font-weight: normal;
                 margin-left: 4px;
                 text-transform: none;
@@ -684,7 +629,7 @@
         inputMinScore.setAttribute('min', '0');
         inputMaxScore.setAttribute('min', '0');
 
-        const scoreSplitRow = el('div', { className: 'tm-raf-split-row' }, [
+        const scoreSplitRow = el('div', { className: 'tm-raf-split-row', style: 'margin-top: 0.5rem;' }, [
             el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', textContent: 'Min Upvotes' }), inputMinScore ]),
             el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', textContent: 'Max Upvotes' }), inputMaxScore ])
         ]);
@@ -792,40 +737,30 @@
             btnReset
         ]);
 
-        // --- Assembly ---
-        const panelBody = el('div', { id: 'tm-raf-body', className: `tm-raf-body ${state.isPanelOpen ? '' : 'hidden'}` }, [
+        // --- Assembly using Native Reddit Classes ---
+        const panelBody = el('div', { id: 'tm-raf-body', className: 'content' }, [
             basicSection,
             advancedToggle,
             advancedContainer,
             footerSection
         ]);
 
-        const arrowIcon = el('span', { id: 'tm-raf-arrow', className: 'tm-raf-arrow', textContent: state.isPanelOpen ? '▼' : '▲' });
-
-        const togglePanel = () => {
-            state.isPanelOpen = !state.isPanelOpen;
-            panelBody.classList.toggle('hidden', !state.isPanelOpen);
-            arrowIcon.textContent = state.isPanelOpen ? '▼' : '▲';
-            saveState();
-        };
-
         const headerToggle = el('div', {
-            className: 'tm-raf-toggle-header',
-            role: 'button',
-            tabIndex: '0',
-            'aria-expanded': state.isPanelOpen.toString(),
-            title: 'Toggle Filter Panel (Alt+F)',
-            onClick: togglePanel,
-            onKeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); togglePanel(); } }
+            className: 'title',
+            style: 'display: flex; justify-content: space-between; align-items: center; user-select: none;'
         }, [
-            el('div', { className: 'tm-raf-header-left' }, [
-                el('span', { textContent: 'Post Filters' }),
+            el('h1', { textContent: 'Post Filters', style: 'margin: 0;' }),
+            el('div', { style: 'display: flex; align-items: center; gap: 6px;' }, [
                 el('div', { id: 'tm-raf-indicator', className: 'tm-raf-indicator', title: 'Filters Active' })
-            ]),
-            arrowIcon
+            ])
         ]);
 
-        const panel = el('div', { className: 'tm-raf-container' }, [headerToggle, panelBody]);
+        const panel = el('div', { className: 'spacer' }, [
+            el('div', { className: 'sidecontentbox' }, [
+                headerToggle,
+                panelBody
+            ])
+        ]);
 
         const searchBox = sidebar.querySelector(CONFIG.SELECTORS.SEARCH_BOX);
         if (searchBox && searchBox.parentNode) {
@@ -837,7 +772,7 @@
         const emptyStateContainer = el('div', { id: 'tm-raf-empty-state', className: 'tm-raf-empty-state' }, [
             el('h3', { textContent: 'No posts match your filters.' }),
             el('p', { textContent: 'Adjust your date range, score, or blocklists to see content.' }),
-            el('button', { textContent: 'Clear All Filters', onClick: resetFilters })
+            el('button', { className: 'btn', textContent: 'Clear All Filters', onClick: resetFilters })
         ]);
 
         siteTable.parentNode.insertBefore(emptyStateContainer, siteTable);
