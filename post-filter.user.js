@@ -2,11 +2,10 @@
 // @name         [Reddit] Post Filter
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      2.5
-// @description  Filters Reddit posts.
+// @version      2.6
+// @description  Filters Reddit posts using native subreddit CSS for seamless integration and dark mode support.
 // @author       Xiv
-// @match        *://old.reddit.com/*
-// @match        *://www.reddit.com/*
+// @match        *://*.reddit.com/*
 // @noframes
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -17,7 +16,14 @@
 (function () {
     'use strict';
 
+    // Prevent duplicate execution
     if (window.__tmRedditFilterRunning) return;
+
+    // GUARD: Do not run on comment pages (this is a feed filter)
+    if (window.location.pathname.includes('/comments/') || document.body.classList.contains('comments-page')) {
+        return;
+    }
+
     window.__tmRedditFilterRunning = true;
 
     // ==========================================
