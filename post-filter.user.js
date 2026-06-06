@@ -2,13 +2,12 @@
 // @name         [Reddit] Post Filter
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      2.6
-// @description  Filters Reddit posts using native subreddit CSS for seamless integration and dark mode support.
+// @version      2.12
+// @description  Filters Reddit posts dynamically with customizable rules for scores, dates, and keywords.
 // @author       Xiv
 // @match        *://*.reddit.com/*
 // @noframes
-// @grant        GM_setValue
-// @grant        GM_getValue
+// @run-at       document-start
 // @updateURL    https://myouisaur.github.io/Reddit/post-filter.user.js
 // @downloadURL  https://myouisaur.github.io/Reddit/post-filter.user.js
 // ==/UserScript==
@@ -20,7 +19,7 @@
     if (window.__tmRedditFilterRunning) return;
 
     // GUARD: Do not run on comment pages (this is a feed filter)
-    if (window.location.pathname.includes('/comments/') || document.body.classList.contains('comments-page')) {
+    if (window.location.pathname.includes('/comments/') || document.body?.classList.contains('comments-page')) {
         return;
     }
 
@@ -45,13 +44,15 @@
             PROMOTED_LINK: '.promotedlink',
             SEARCH_BOX: '#search'
         },
-        STORAGE_KEY: 'tm_reddit_filter_state_v2'
+        STORAGE_KEY: 'tm_reddit_filter_session_v3'
     };
 
-    const mainContent = document.querySelector(CONFIG.SELECTORS.TARGET_PARENT);
-    const siteTable = document.querySelector(CONFIG.SELECTORS.SITE_TABLE);
-    const sidebar = document.querySelector(CONFIG.SELECTORS.SIDEBAR);
-    if (!mainContent || !siteTable || !sidebar) return;
+    // Centralized DOM references populated during bootstrap
+    const DOM = {
+        mainContent: null,
+        siteTable: null,
+        sidebar: null
+    };
 
     let state = {
         dateFrom: null,
@@ -84,6 +85,8 @@
         for (const [key, value] of Object.entries(attributes)) {
             if (key === 'className') {
                 element.className = value;
+            } else if (key === 'htmlFor') {
+                element.setAttribute('for', value);
             } else if (key === 'textContent') {
                 element.textContent = value;
             } else if (key === 'checked' || key === 'disabled' || key === 'selected') {
@@ -116,10 +119,21 @@
         return date.getTime();
     }
 
+    function formatDateForInput(timestamp) {
+        if (!timestamp) return '';
+        const d = new Date(timestamp);
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+
     function isFilterActive() {
-        return state.minScore > 0 || state.maxScore !== null || state.dateFrom !== null ||
+        return state.minScore > 0 ||
+               state.maxScore !== null || state.dateFrom !== null ||
                state.dateTo !== null || state.hideUpvoted || state.hidePromoted ||
-               state.keywords.trim() !== '' || state.flairs.trim() !== '' ||
+               state.keywords.trim() !== '' ||
+               state.flairs.trim() !== '' ||
                state.postType !== 'all' || state.highlightThreshold !== null;
     }
 
@@ -128,27 +142,62 @@
         return str.toLowerCase().split(',').map(s => s.trim()).filter(s => s.length > 0);
     }
 
+    function escapeRegExp(string) {
+        return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // Escapes special regex characters
+    }
+
+    function buildKeywordRegexes(str) {
+        if (!str) return [];
+        return str.toLowerCase().split(',')
+            .map(s => s.trim())
+            .filter(s => s.length > 0)
+            .map(s => new RegExp(`\\b${escapeRegExp(s)}\\b`, 'i')); // Strict word boundary match
+    }
+
     // ==========================================
     // STORAGE MANAGEMENT
     // ==========================================
 
     function loadState() {
         try {
-            const saved = GM_getValue(CONFIG.STORAGE_KEY, '{}');
-            const parsed = JSON.parse(saved);
-            state.isAdvancedOpen = parsed.isAdvancedOpen === true;
+            const saved = sessionStorage.getItem(CONFIG.STORAGE_KEY);
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                state.dateFrom = parsed.dateFrom ?? null;
+                state.dateTo = parsed.dateTo ?? null;
+                state.minScore = parsed.minScore ?? 0;
+                state.maxScore = parsed.maxScore ?? null;
+                state.hideUpvoted = parsed.hideUpvoted ?? false;
+                state.hidePromoted = parsed.hidePromoted ?? false;
+                state.postType = parsed.postType ?? 'all';
+                state.keywords = parsed.keywords ?? '';
+                state.flairs = parsed.flairs ?? '';
+                state.highlightThreshold = parsed.highlightThreshold ?? null;
+                state.isAdvancedOpen = parsed.isAdvancedOpen === true;
+            }
         } catch (e) {
-            console.warn('[Reddit Filter] Failed to parse stored state, using defaults.');
+            console.warn('[Reddit Filter] Failed to parse session state, using defaults.');
         }
     }
 
     function saveState() {
         try {
-            GM_setValue(CONFIG.STORAGE_KEY, JSON.stringify({
+            const stateToSave = {
+                dateFrom: state.dateFrom,
+                dateTo: state.dateTo,
+                minScore: state.minScore,
+                maxScore: state.maxScore,
+                hideUpvoted: state.hideUpvoted,
+                hidePromoted: state.hidePromoted,
+                postType: state.postType,
+                keywords: state.keywords,
+                flairs: state.flairs,
+                highlightThreshold: state.highlightThreshold,
                 isAdvancedOpen: state.isAdvancedOpen
-            }));
+            };
+            sessionStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(stateToSave));
         } catch (e) {
-            console.error('[Reddit Filter] Failed to save state:', e);
+            console.error('[Reddit Filter] Failed to save session state:', e);
         }
     }
 
@@ -158,7 +207,6 @@
 
     function getPostData(postEl) {
         let cached = state.postCache.get(postEl);
-
         if (cached === undefined) {
             let timestamp = null;
             const timeEl = postEl.querySelector(CONFIG.SELECTORS.TIME_ELEMENT);
@@ -171,7 +219,6 @@
 
             const flairEl = postEl.querySelector(CONFIG.SELECTORS.FLAIR_ELEMENT);
             const flairText = flairEl ? flairEl.textContent.toLowerCase() : '';
-
             const isPromoted = postEl.classList.contains('promotedlink') || postEl.dataset.promoted === 'true';
             const isTextPost = postEl.classList.contains('self');
 
@@ -186,11 +233,10 @@
         }
 
         const isUpvoted = postEl.querySelector(CONFIG.SELECTORS.UPVOTED_ARROW) !== null;
-
         return { ...cached, score, isUpvoted };
     }
 
-    function evaluatePost(postEl, activeKeywords, activeFlairs) {
+    function checkPostVisibility(postEl, activeKeywordRegexes, activeFlairs) {
         const data = getPostData(postEl);
         let isVisible = true;
         let isHighlighted = false;
@@ -205,7 +251,6 @@
         const validMax = (state.maxScore !== null && state.maxScore >= state.minScore) ? state.maxScore : null;
         if (isVisible && state.minScore > 0 && data.score < state.minScore) isVisible = false;
         if (isVisible && validMax !== null && data.score > validMax) isVisible = false;
-
         if (isVisible && state.hideUpvoted && data.isUpvoted) isVisible = false;
 
         if (isVisible && data.timestamp) {
@@ -213,9 +258,9 @@
             if (state.dateTo && data.timestamp > state.dateTo) isVisible = false;
         }
 
-        if (isVisible && activeKeywords.length > 0) {
-            for (const kw of activeKeywords) {
-                if (data.titleText.includes(kw)) {
+        if (isVisible && activeKeywordRegexes.length > 0) {
+            for (const kwRegex of activeKeywordRegexes) {
+                if (kwRegex.test(data.titleText)) {
                     isVisible = false;
                     break;
                 }
@@ -235,14 +280,7 @@
             isHighlighted = true;
         }
 
-        postEl.classList.toggle('tm-raf-hidden', !isVisible);
-        postEl.classList.toggle('tm-raf-highlight', isHighlighted);
-
-        if (postEl.parentElement && postEl.parentElement.classList.contains('spacer')) {
-            postEl.parentElement.classList.toggle('tm-raf-hidden', !isVisible);
-        }
-
-        postEl.dataset.tmEval = 'true';
+        return { isVisible, isHighlighted };
     }
 
     function executeFilter() {
@@ -253,18 +291,52 @@
             const selector = state.needsFullReeval ? CONFIG.SELECTORS.POST_ITEM : `${CONFIG.SELECTORS.POST_ITEM}:not([data-tm-eval="true"])`;
             const postsToProcess = document.querySelectorAll(selector);
 
-            const activeKeywords = splitAndClean(state.keywords);
+            const activeKeywordRegexes = buildKeywordRegexes(state.keywords);
             const activeFlairs = splitAndClean(state.flairs);
 
+            // Phase 1: Read metrics (Prevents layout thrashing)
+            const updates = [];
+            let newlyProcessed = 0;
+            let newlyVisible = 0;
+
+            if (state.needsFullReeval) {
+                state.totalPosts = 0;
+                state.visiblePosts = 0;
+            }
+
             postsToProcess.forEach(post => {
-                evaluatePost(post, activeKeywords, activeFlairs);
+                const { isVisible, isHighlighted } = checkPostVisibility(post, activeKeywordRegexes, activeFlairs);
+                updates.push({ post, isVisible, isHighlighted });
+
+                if (state.needsFullReeval) {
+                    state.totalPosts++;
+                    if (isVisible) state.visiblePosts++;
+                } else {
+                    newlyProcessed++;
+                    if (isVisible) newlyVisible++;
+                }
             });
 
-            state.totalPosts = document.querySelectorAll(CONFIG.SELECTORS.POST_ITEM).length;
-            const hiddenPosts = document.querySelectorAll(`.tm-raf-hidden${CONFIG.SELECTORS.POST_ITEM}`).length;
-            state.visiblePosts = state.totalPosts - hiddenPosts;
+            if (!state.needsFullReeval) {
+                state.totalPosts += newlyProcessed;
+                state.visiblePosts += newlyVisible;
+            }
+
+            // Phase 2: Write mutations
+            updates.forEach(({ post, isVisible, isHighlighted }) => {
+                post.classList.toggle('tm-raf-hidden', !isVisible);
+                post.classList.toggle('tm-raf-highlight', isHighlighted);
+
+                if (post.parentElement && post.parentElement.classList.contains('spacer')) {
+                    post.parentElement.classList.toggle('tm-raf-hidden', !isVisible);
+                }
+
+                post.dataset.tmEval = 'true';
+            });
 
             state.needsFullReeval = false;
+
+            saveState();
             updateUIState();
             setTimeout(() => { state.isMutating = false; }, 0);
         });
@@ -355,9 +427,9 @@
             }
         });
 
-        observer.observe(mainContent, { childList: true, subtree: true });
+        observer.observe(DOM.mainContent, { childList: true, subtree: true });
 
-        document.addEventListener('click', (e) => {
+        DOM.siteTable.addEventListener('click', (e) => {
             if (e.target.matches('.arrow')) queueFilter(true);
         });
     }
@@ -368,8 +440,8 @@
         const existing = document.getElementById('tm-raf-sentinel');
         if (existing) existing.remove();
 
-        const sentinel = el('div', { id: 'tm-raf-sentinel', style: 'height: 1px; width: 100%; clear: both;' });
-        siteTable.appendChild(sentinel);
+        const sentinel = el('div', { id: 'tm-raf-sentinel', style: 'height: 1px; width: 100%; clear: left;' });
+        DOM.siteTable.appendChild(sentinel);
 
         state.io = new IntersectionObserver(entries => {
             if (entries[0].isIntersecting && state.visiblePosts < state.totalPosts) {
@@ -396,6 +468,7 @@
 
     function injectStyles() {
         if (document.getElementById('tm-raf-styles')) return;
+
         const css = `
             /* Bulletproof Hiding */
             .tm-raf-hidden,
@@ -585,6 +658,7 @@
                 text-transform: none;
             }
         `;
+
         document.head.appendChild(el('style', { id: 'tm-raf-styles', textContent: css }));
     }
 
@@ -632,26 +706,36 @@
         // --- Basic Section ---
         const inputMinScore = createInput('tm-raf-min-score', 'number', 'Min (e.g. 10)', state.minScore || '', 'minScore', v => parseInt(v, 10) || 0);
         const inputMaxScore = createInput('tm-raf-max-score', 'number', 'Max (infinite)', state.maxScore, 'maxScore', v => v.trim() === '' ? null : (parseInt(v, 10) || 0));
+
         inputMinScore.setAttribute('min', '0');
         inputMaxScore.setAttribute('min', '0');
 
         const scoreSplitRow = el('div', { className: 'tm-raf-split-row', style: 'margin-top: 0.5rem;' }, [
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', textContent: 'Min Upvotes' }), inputMinScore ]),
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', textContent: 'Max Upvotes' }), inputMaxScore ])
+            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-min-score', textContent: 'Min Upvotes' }), inputMinScore ]),
+            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-max-score', textContent: 'Max Upvotes' }), inputMaxScore ])
         ]);
 
         const inputDateFrom = el('input', {
             id: 'tm-raf-date-from', type: 'date', className: 'tm-raf-input',
-            onChange: (e) => { state.dateFrom = parseInputDateToLocal(e.target.value, false); queueFilter(true); }
+            value: formatDateForInput(state.dateFrom),
+            onChange: (e) => {
+                state.dateFrom = parseInputDateToLocal(e.target.value, false);
+                queueFilter(true);
+            }
         });
+
         const inputDateTo = el('input', {
             id: 'tm-raf-date-to', type: 'date', className: 'tm-raf-input',
-            onChange: (e) => { state.dateTo = parseInputDateToLocal(e.target.value, true); queueFilter(true); }
+            value: formatDateForInput(state.dateTo),
+            onChange: (e) => {
+                state.dateTo = parseInputDateToLocal(e.target.value, true);
+                queueFilter(true);
+            }
         });
 
         const dateSplitRow = el('div', { className: 'tm-raf-split-row', style: 'margin-bottom: 0;' }, [
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', textContent: 'Date From' }), inputDateFrom ]),
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', textContent: 'Date To' }), inputDateTo ])
+            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-date-from', textContent: 'Date From' }), inputDateFrom ]),
+            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-date-to', textContent: 'Date To' }), inputDateTo ])
         ]);
 
         const basicSection = el('div', { className: 'tm-raf-section' }, [
@@ -668,25 +752,26 @@
             el('option', { value: 'text', textContent: 'Self/Text Only' }),
             el('option', { value: 'link', textContent: 'Links Only' })
         ]);
+
         typeSelect.value = state.postType;
 
         const inputHighlight = createInput('tm-raf-highlight', 'number', '> 5000', state.highlightThreshold, 'highlightThreshold', v => v.trim() === '' ? null : (parseInt(v, 10) || 0));
         inputHighlight.setAttribute('min', '0');
 
         const typeAndHighlightRow = el('div', { className: 'tm-raf-split-row' }, [
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', textContent: 'Post Type' }), typeSelect ]),
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', textContent: 'Highlight If...' }), inputHighlight ])
+            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-post-type', textContent: 'Post Type' }), typeSelect ]),
+            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-highlight', textContent: 'Highlight If...' }), inputHighlight ])
         ]);
 
         const inputKeywords = createInput('tm-raf-keywords', 'text', 'e.g. politics, update', state.keywords, 'keywords', v => v);
         const keywordsRow = el('div', { className: 'tm-raf-row' }, [
-            el('label', { className: 'tm-raf-label' }, [ 'Blocked Keywords', el('span', { className: 'tm-raf-hint', textContent: '(comma-separated)' }) ]),
+            el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-keywords' }, [ 'Blocked Keywords', el('span', { className: 'tm-raf-hint', textContent: '(comma-separated)' }) ]),
             inputKeywords
         ]);
 
         const inputFlairs = createInput('tm-raf-flairs', 'text', 'e.g. meme, rant', state.flairs, 'flairs', v => v);
         const flairsRow = el('div', { className: 'tm-raf-row' }, [
-            el('label', { className: 'tm-raf-label' }, [ 'Blocked Flairs', el('span', { className: 'tm-raf-hint', textContent: '(comma-separated)' }) ]),
+            el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-flairs' }, [ 'Blocked Flairs', el('span', { className: 'tm-raf-hint', textContent: '(comma-separated)' }) ]),
             inputFlairs
         ]);
 
@@ -716,6 +801,7 @@
         ]);
 
         const advancedToggleIcon = el('span', { textContent: state.isAdvancedOpen ? '▲' : '▼', style: 'margin-left: 4px; font-size: 0.65rem;' });
+
         const advancedToggle = el('div', {
             className: 'tm-raf-advanced-toggle',
             role: 'button',
@@ -724,7 +810,7 @@
                 state.isAdvancedOpen = !state.isAdvancedOpen;
                 advancedContainer.classList.toggle('open', state.isAdvancedOpen);
                 advancedToggleIcon.textContent = state.isAdvancedOpen ? '▲' : '▼';
-                saveState();
+                saveState(); // Saved immediately on toggle since this avoids triggering a full filter queue
             },
             onKeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); advancedToggle.click(); } }
         }, [
@@ -768,11 +854,11 @@
             ])
         ]);
 
-        const searchBox = sidebar.querySelector(CONFIG.SELECTORS.SEARCH_BOX);
+        const searchBox = DOM.sidebar.querySelector(CONFIG.SELECTORS.SEARCH_BOX);
         if (searchBox && searchBox.parentNode) {
             searchBox.parentNode.insertAdjacentElement('afterend', panel);
         } else {
-            sidebar.prepend(panel);
+            DOM.sidebar.prepend(panel);
         }
 
         const emptyStateContainer = el('div', { id: 'tm-raf-empty-state', className: 'tm-raf-empty-state' }, [
@@ -781,7 +867,9 @@
             el('button', { className: 'btn', textContent: 'Clear All Filters', onClick: resetFilters })
         ]);
 
-        siteTable.parentNode.insertBefore(emptyStateContainer, siteTable);
+        if (DOM.siteTable.parentNode) {
+            DOM.siteTable.parentNode.insertBefore(emptyStateContainer, DOM.siteTable);
+        }
     }
 
     // ==========================================
@@ -799,10 +887,40 @@
         executeFilter();
     }
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
-        init();
+    // Attempt to grab core elements. If they exist, we initialize and return true.
+    function tryInit(observer = null) {
+        DOM.mainContent = document.querySelector(CONFIG.SELECTORS.TARGET_PARENT);
+        DOM.siteTable = document.querySelector(CONFIG.SELECTORS.SITE_TABLE);
+        DOM.sidebar = document.querySelector(CONFIG.SELECTORS.SIDEBAR);
+
+        if (DOM.mainContent && DOM.siteTable && DOM.sidebar) {
+            if (observer) observer.disconnect();
+            init();
+            return true;
+        }
+        return false;
     }
+
+    function bootstrap() {
+        // First try to initialize in case the elements are already in the DOM
+        if (tryInit()) return;
+
+        // Otherwise, watch the document as it streams in and initialize the millisecond they appear
+        let throttleTimer = null;
+
+        const observer = new MutationObserver(() => {
+            if (throttleTimer) return;
+
+            // Throttle checks to once per 50ms during the intense initial page render
+            throttleTimer = setTimeout(() => {
+                throttleTimer = null;
+                tryInit(observer);
+            }, 50);
+        });
+
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+    }
+
+    bootstrap();
 
 })();
