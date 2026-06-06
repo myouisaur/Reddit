@@ -2,7 +2,7 @@
 // @name         [Reddit] RES Viewport-Fit Media
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      1.7
+// @version      1.8
 // @description  Automatically sizes expanded media to fit the visible screen space as you scroll.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -37,6 +37,7 @@
         // All bottom chrome elements whose height is subtracted from available space.
         BOTTOM_CHROME_SELECTORS: [
             '.res-caption',
+            '.res-expando-siteAttribution',
             '.res-iframe-expando-drag-handle',
         ],
 
