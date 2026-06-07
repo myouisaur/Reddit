@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [Reddit] Media Extractor
 // @namespace    https://github.com/myouisaur/Reddit
-// @icon         https://www.redditstatic.com/desktop2x/img/favicon/favicon-96x96.png
-// @version      4.2
+// @icon         https://www.reddit.com/favicon.ico
+// @version      4.6
 // @description  Adds floating open and download buttons to Reddit images and videos.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -46,16 +46,17 @@
     CLASSES: {
       WRAPPER: 'xiv-wrap',
       CONTAINER: 'xiv-container',
-      BTN: 'xiv-glass-btn'
+      BTN: 'xiv-glass-btn',
+      ICON_WRAPPER: 'xiv-glass-icon'
     },
     VALID_IMG_HOSTS: ['redd.it', 'v.redd.it', 'redditmedia.com', 'imgur.com', 'ibb.co', 'prnt.sc', 'postimg.cc', 'imgchest.com', 'lensdump.com', 'giphy.com', 'tenor.com']
   };
 
   const ICONS = {
-    OPEN: 'M19 19H5V5h7V3H5a2 2 0 00-2 2v14a2 2 0 002 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z',
-    DOWNLOAD: 'M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z',
-    PLAY: 'M8 5v14l11-7z',
-    SPINNER: 'M12 4V2A10 10 0 0 0 2 12h2a8 8 0 0 1 8-8z'
+    OPEN: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>',
+    DOWNLOAD: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line>',
+    PLAY: '<polygon points="5 3 19 12 5 21 5 3"></polygon>',
+    SPINNER: '<line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line>'
   };
 
   // ==========================================================================
@@ -87,11 +88,16 @@
   function createIcon(pathData, isSpinner = false) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.style.cssText = 'width:17px;height:17px;display:block;';
+
     if (isSpinner) svg.classList.add('xiv-spin');
 
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', pathData);
-    svg.appendChild(path);
+    svg.innerHTML = pathData; // Safe usage: pulling from static hardcoded ICONS constant
     return svg;
   }
 
@@ -99,12 +105,10 @@
     const src = imgEl.src;
     if (!src) return null;
 
-    // 1. Native Reddit High-Res Translation
     if (src.includes('preview.redd.it')) {
       return src.split('?')[0].replace('preview.redd.it', 'i.redd.it');
     }
 
-    // 2. External Proxy Resolution (Bulletproof Query Parameter parsing)
     if (src.includes('external-preview.redd.it')) {
       try {
         const urlObj = new URL(src);
@@ -136,7 +140,6 @@
     }
 
     if (player.tagName === 'SHREDDIT-PLAYER') {
-      // Primary: Check JSON for highest res
       const mediaJsonStr = player.getAttribute('packaged-media-json');
       if (mediaJsonStr) {
         try {
@@ -145,10 +148,11 @@
             const best = mediaObj.playbackMp4s.sort((a,b) => (b.height || 0) - (a.height || 0))[0];
             if (best && best.url) return best.url;
           }
-        } catch(e) { log('Failed to parse packaged-media-json', e); }
+        } catch(e) {
+          log('Failed to parse packaged-media-json', e);
+        }
       }
 
-      // Secondary: Check DOM Attributes directly
       let vUrl = player.getAttribute('src') || player.getAttribute('packaged-video') || player.getAttribute('dashUrl') || player.getAttribute('hlsUrl') || '';
       if (vUrl.includes('.m3u8')) vUrl = vUrl.split('HLSPlaylist.m3u8')[0] + 'DASH_480.mp4?source=fallback';
       return vUrl;
@@ -174,8 +178,13 @@
   // ==========================================================================
   // MODULE 2: DOWNLOAD ENGINE
   // ==========================================================================
+  function getIconWrapper(btnElement) {
+    return btnElement.querySelector(`.${CONFIG.CLASSES.ICON_WRAPPER}`) || btnElement;
+  }
+
   function restoreBtn(btnElement, iconPathData) {
-    btnElement.replaceChildren(createIcon(iconPathData));
+    const wrapper = getIconWrapper(btnElement);
+    wrapper.replaceChildren(createIcon(iconPathData));
     btnElement.style.pointerEvents = '';
   }
 
@@ -224,7 +233,8 @@
       return;
     }
 
-    btnElement.replaceChildren(createIcon(ICONS.SPINNER, true));
+    const wrapper = getIconWrapper(btnElement);
+    wrapper.replaceChildren(createIcon(ICONS.SPINNER, true));
     btnElement.style.pointerEvents = 'none';
 
     if (typeof GM_download === 'function') {
@@ -240,7 +250,7 @@
               const span = document.createElement('span');
               span.className = 'xiv-progress-text';
               span.textContent = `${percent}%`;
-              btnElement.replaceChildren(span);
+              wrapper.replaceChildren(span);
               lastUpdate = now;
             }
           }
@@ -268,12 +278,21 @@
       display: flex !important;
       gap: 8px;
       z-index: 2147483647 !important;
-      opacity: 0;
       pointer-events: none;
+      opacity: 0;
       transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
-    /* Prevent overlap with Reddit's native image gallery arrows */
+    .xiv-container::before {
+      content: '';
+      position: absolute;
+      top: -20px; right: -25px; bottom: -20px; left: -25px;
+      z-index: -1;
+      background: radial-gradient(ellipse at center, rgba(0,0,0,0.22) 0%, rgba(0,0,0,0) 65%);
+      pointer-events: none;
+      border-radius: 50%;
+    }
+
     ul > li .xiv-container,
     [data-testid="carousel"] .xiv-container,
     .gallery-viewport .xiv-container {
@@ -286,41 +305,189 @@
       pointer-events: auto !important;
     }
 
-    /* Glassmorphism UI */
+    /* ======================================================================
+       LIQUID GLASS BUTTON CORE
+       ====================================================================== */
     .xiv-glass-btn {
-      width: clamp(32px, 3.5vw, 40px);
-      height: clamp(32px, 3.5vw, 40px);
-      background: rgba(0, 0, 0, 0.5);
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      color: #ffffff;
+      position: relative;
+      width: 35px;
+      height: 35px;
       border-radius: 50%;
+      border: none;
+      outline: none;
+      overflow: hidden;
       cursor: pointer;
-      border: 1px solid rgba(255, 255, 255, 0.15);
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-      transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
-      user-select: none;
+      flex-shrink: 0;
+      color: rgba(255, 255, 255, 0.96);
+
+      /* Frosted glass base */
+      background: rgba(255, 255, 255, 0.14);
+      backdrop-filter: blur(24px) saturate(180%) brightness(1.1);
+      -webkit-backdrop-filter: blur(24px) saturate(180%) brightness(1.1);
+
+      /* Layered inset highlights + drop shadow */
+      box-shadow:
+        inset 0  1.5px 0   rgba(255,255,255,0.75),
+        inset 0 -1.5px 0   rgba(255,255,255,0.06),
+        inset  1px 0   0   rgba(255,255,255,0.30),
+        inset -1px 0   0   rgba(255,255,255,0.10),
+        0 0 0 0.5px        rgba(255,255,255,0.20),
+        0 6px 20px         rgba(0,0,0,0.32),
+        0 2px  6px         rgba(0,0,0,0.20);
+
+      /* CRITICAL: Do NOT animate backdrop-filter. Animating it causes engine snapping. */
+      transition:
+        box-shadow 0.35s ease,
+        background 0.35s ease;
     }
 
-    .xiv-glass-btn svg {
-      width: 50%;
-      height: 50%;
-      display: block;
-      fill: currentColor;
+    /* Gradient border ring (mask-composite) */
+    .xiv-glass-btn::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      padding: 1px;
+      background: linear-gradient(
+        155deg,
+        rgba(255,255,255,0.72) 0%,
+        rgba(255,255,255,0.35) 25%,
+        rgba(255,255,255,0.08) 55%,
+        rgba(255,255,255,0.22) 100%
+      );
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    /* Top glare / specular highlight */
+    .xiv-glass-btn::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 58%;
+      background: radial-gradient(
+        ellipse 75% 70% at 50% -8%,
+        rgba(255,255,255,0.58)  0%,
+        rgba(255,255,255,0.20) 40%,
+        rgba(255,255,255,0.05) 70%,
+        transparent            90%
+      );
+      border-radius: 50% 50% 0 0;
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    /* Hover state - Purely static positioning as requested, smooth lighting */
+    .xiv-glass-btn:hover {
+      background: rgba(255, 255, 255, 0.22);
+      backdrop-filter: blur(32px) saturate(210%) brightness(1.18);
+      -webkit-backdrop-filter: blur(32px) saturate(210%) brightness(1.18);
+      box-shadow:
+        inset 0  1.5px 0   rgba(255,255,255,0.85),
+        inset 0 -1.5px 0   rgba(255,255,255,0.08),
+        inset  1px 0   0   rgba(255,255,255,0.40),
+        inset -1px 0   0   rgba(255,255,255,0.14),
+        0 0 0 0.5px        rgba(255,255,255,0.28),
+        0 10px 30px        rgba(0,0,0,0.38),
+        0 3px 10px         rgba(0,0,0,0.22),
+        0 0 22px           rgba(140,180,255,0.22);
+    }
+
+    /* Active / pressed state */
+    .xiv-glass-btn:active {
+      transition: box-shadow 0.10s ease;
+      box-shadow:
+        inset 0  1.5px 0  rgba(255,255,255,0.75),
+        inset 0 -1.5px 0  rgba(255,255,255,0.06),
+        inset  1px 0   0  rgba(255,255,255,0.30),
+        inset -1px 0   0  rgba(255,255,255,0.10),
+        0 0 0 0.5px       rgba(255,255,255,0.18),
+        0 3px 10px        rgba(0,0,0,0.25);
+    }
+
+    /* Icon wrapper */
+    .xiv-glass-icon {
+      position: relative;
+      z-index: 6;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: rgba(255, 255, 255, 0.96);
+      filter: drop-shadow(0 0 4px rgba(0,0,0,0.65)) drop-shadow(0 1px 3px rgba(0,0,0,0.50));
+      transition: filter 0.35s ease;
       pointer-events: none;
     }
 
-    .xiv-glass-btn:hover {
-      transform: scale(1.05);
-      background: rgba(0, 0, 0, 0.8);
-      border-color: rgba(255, 255, 255, 0.4);
+    /* Icon lifts and gets a blue glow on hover */
+    .xiv-glass-btn:hover .xiv-glass-icon {
+      filter: drop-shadow(0 0 7px rgba(180,210,255,0.70)) drop-shadow(0 2px 4px rgba(0,0,0,0.55));
     }
 
-    .xiv-glass-btn:active {
-      transform: scale(0.95);
+    /* INNER GLASS LAYERS */
+    .xiv-glass-lens {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      background: radial-gradient(circle at 72% 56%, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0.06) 45%, rgba(180,200,255,0.04) 80%, rgba(0,0,0,0) 100%);
+      pointer-events: none;
+      z-index: 1;
+    }
+    .xiv-glass-scatter {
+      position: absolute;
+      inset: 2px;
+      border-radius: 50%;
+      background: radial-gradient(ellipse 60% 50% at 38% 40%, rgba(255,255,255,0.09) 0%, transparent 65%);
+      pointer-events: none;
+      z-index: 2;
+    }
+    .xiv-glass-chroma {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      background: radial-gradient(ellipse 100% 100% at 50% 50%, transparent 62%, rgba(80,200,255,0.09) 74%, rgba(255,80,100,0.07) 84%, transparent 92%);
+      pointer-events: none;
+      z-index: 3;
+    }
+    .xiv-glass-rim {
+      position: absolute;
+      bottom: 0; left: 10%; right: 10%;
+      height: 40%;
+      background: radial-gradient(ellipse 80% 100% at 50% 115%, rgba(255,255,255,0.26) 0%, rgba(255,255,255,0.08) 45%, transparent 70%);
+      border-radius: 0 0 50% 50%;
+      pointer-events: none;
+      z-index: 4;
+    }
+
+    /* Ripple on click */
+    .xiv-glass-ripple {
+      position: absolute;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.28);
+      transform: scale(0);
+      animation: xiv-ripple 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      pointer-events: none;
+      z-index: 7;
+    }
+    @keyframes xiv-ripple {
+      to { transform: scale(2.8); opacity: 0; }
+    }
+
+    /* Spinner */
+    .xiv-spin {
+      animation: xiv-spin-anim 0.9s linear infinite;
+      transform-origin: center;
+    }
+    @keyframes xiv-spin-anim {
+      100% { transform: rotate(360deg); }
     }
 
     .xiv-progress-text {
@@ -330,23 +497,22 @@
       letter-spacing: -0.5px;
     }
 
-    @keyframes xiv-spin { 100% { transform: rotate(360deg); } }
-    .xiv-spin { animation: xiv-spin 1s linear infinite; }
-
+    /* Toasts */
     #xiv-toast-container {
       position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-      z-index: 2147483647 !important; /* Forces above all theater overlays */
-      display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+      z-index: 2147483647 !important;
+      display: flex; flex-direction: column;
+      gap: 8px; pointer-events: none;
     }
-
     .xiv-toast {
-      background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
       color: #ffffff; padding: 12px 24px; border-radius: 30px; font-size: 14px;
-      font-family: system-ui, -apple-system, sans-serif; border: 1px solid rgba(255, 255, 255, 0.15);
+      font-family: system-ui, -apple-system, sans-serif;
+      border: 1px solid rgba(255, 255, 255, 0.15);
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2); opacity: 0; transform: translateY(20px);
       transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
     }
-
     .xiv-toast.xiv-visible { opacity: 1; transform: translateY(0); }
   `);
 
@@ -354,14 +520,43 @@
     const btn = document.createElement('div');
     btn.className = CONFIG.CLASSES.BTN;
     btn.title = title;
-
     btn.setAttribute('role', 'button');
     btn.setAttribute('aria-label', title);
     btn.setAttribute('tabindex', '0');
 
-    btn.appendChild(createIcon(iconPath));
+    // Inner Glass Layers
+    const lens = document.createElement('div');
+    lens.className = 'xiv-glass-lens';
+    const scatter = document.createElement('div');
+    scatter.className = 'xiv-glass-scatter';
+    const chroma = document.createElement('div');
+    chroma.className = 'xiv-glass-chroma';
+    const rim = document.createElement('div');
+    rim.className = 'xiv-glass-rim';
+
+    const iconWrapper = document.createElement('span');
+    iconWrapper.className = CONFIG.CLASSES.ICON_WRAPPER;
+    iconWrapper.appendChild(createIcon(iconPath));
+
+    btn.append(lens, scatter, chroma, rim, iconWrapper);
 
     const stopPropagation = (e) => { e.stopPropagation(); e.preventDefault(); };
+
+    // Ripple logic injected on pointerdown
+    btn.addEventListener('pointerdown', function(e) {
+      const r = btn.getBoundingClientRect();
+      const size = Math.max(r.width, r.height);
+      const rpl = document.createElement('div');
+      rpl.className = 'xiv-glass-ripple';
+      rpl.style.cssText = `
+        width: ${size}px;
+        height: ${size}px;
+        left: ${e.clientX - r.left - size / 2}px;
+        top: ${e.clientY - r.top - size / 2}px;
+      `;
+      btn.appendChild(rpl);
+      rpl.addEventListener('animationend', () => rpl.remove());
+    });
 
     btn.addEventListener('mousedown', stopPropagation);
     btn.addEventListener('mouseup', stopPropagation);
@@ -376,7 +571,22 @@
 
   function injectButtons(element, type, url) {
     const parent = element.parentElement;
-    if (!parent || parent.querySelector(`.${CONFIG.CLASSES.CONTAINER}`)) return;
+    if (!parent) return;
+
+    const currentSrc = element.src || url;
+
+    // Skip if exactly the same source is already processed in this container
+    if (element.dataset.xivProcessedSrc === currentSrc) {
+      if (parent.querySelector(`.${CONFIG.CLASSES.CONTAINER}`)) return;
+    }
+
+    // Dynamic clean-up for recycled DOM nodes (like in Reddit galleries)
+    const existingContainer = parent.querySelector(`.${CONFIG.CLASSES.CONTAINER}`);
+    if (existingContainer) {
+      existingContainer.remove();
+    }
+
+    element.dataset.xivProcessedSrc = currentSrc;
 
     parent.classList.add(CONFIG.CLASSES.WRAPPER);
     if (getComputedStyle(parent).position === 'static') {
@@ -400,53 +610,41 @@
   }
 
   // ==========================================================================
-  // MODULE 4: LIFECYCLE & OBSERVERS
+  // MODULE 4: LIFECYCLE & CORE LOGIC
   // ==========================================================================
-  const mediaObserver = new IntersectionObserver((entries, observer) => {
-    entries.forEach(entry => {
-      if (entry.isIntersecting) {
-        const el = entry.target;
+  function isRedditImage(img) {
+    if (img.src.includes('avatar')) return false;
 
-        if (el.tagName === 'IMG') {
-          if (entry.boundingClientRect.width >= CONFIG.MIN_SIZE) {
-            const url = getCleanImgUrl(el);
-            if (url) injectButtons(el, 'image', url);
-          }
-        } else {
-          const url = getVideoUrl(el);
-          if (url && !url.startsWith('blob:')) injectButtons(el, 'video', url);
-        }
+    const rect = img.getBoundingClientRect();
+    if (rect.width < 150 && img.naturalWidth < 150) return false;
 
-        observer.unobserve(el);
-      }
-    });
-  }, { rootMargin: '400px' });
+    const isProxy = img.src.includes('external-preview.redd.it');
+    const isKnownHost = CONFIG.VALID_IMG_HOSTS.some(host => img.src.includes(host));
+
+    return isProxy || isKnownHost;
+  }
+
+  function isRedditVideo(vid) {
+    if (vid.tagName === 'IFRAME') {
+      const validIframes = ['redgifs.com', 'streamable.com', 'youtube.com', 'youtube-nocookie.com', 'vimeo.com', 'twitch.tv', 'imgur.com', 'tiktok.com'];
+      return validIframes.some(host => vid.src.includes(host));
+    }
+    return true;
+  }
 
   function scan() {
-    // 1. Scan Images
+    // Images
     document.querySelectorAll(CONFIG.SELECTORS.IMG).forEach(img => {
-      if (img.dataset.xivObserved || img.src.includes('avatar')) return;
-
-      const isProxy = img.src.includes('external-preview.redd.it');
-      const isKnownHost = CONFIG.VALID_IMG_HOSTS.some(host => img.src.includes(host));
-
-      if (!isProxy && !isKnownHost) return;
-
-      img.dataset.xivObserved = 'true';
-      mediaObserver.observe(img);
+      if (!isRedditImage(img)) return;
+      const url = getCleanImgUrl(img);
+      if (url) injectButtons(img, 'image', url);
     });
 
-    // 2. Scan Videos & Iframes
+    // Videos
     document.querySelectorAll(CONFIG.SELECTORS.VIDEO).forEach(vid => {
-      if (vid.dataset.xivObserved) return;
-
-      if (vid.tagName === 'IFRAME') {
-        const validIframes = ['redgifs.com', 'streamable.com', 'youtube.com', 'youtube-nocookie.com', 'vimeo.com', 'twitch.tv', 'imgur.com', 'tiktok.com'];
-        if (!validIframes.some(host => vid.src.includes(host))) return;
-      }
-
-      vid.dataset.xivObserved = 'true';
-      mediaObserver.observe(vid);
+      if (!isRedditVideo(vid)) return;
+      const url = getVideoUrl(vid);
+      if (url && !url.startsWith('blob:')) injectButtons(vid, 'video', url);
     });
   }
 
@@ -462,24 +660,24 @@
   function init() {
     scan();
 
-    // Highly optimized observer: Only triggers scan if elements are added to the DOM
     const domObserver = new MutationObserver((mutations) => {
       let shouldScan = false;
       for (let i = 0; i < mutations.length; i++) {
-        if (mutations[i].addedNodes.length > 0) {
-          for (let j = 0; j < mutations[i].addedNodes.length; j++) {
-            if (mutations[i].addedNodes[j].nodeType === 1) { // Node.ELEMENT_NODE
-              shouldScan = true;
-              break;
-            }
-          }
+        if (mutations[i].addedNodes.length > 0 || mutations[i].type === 'attributes') {
+          shouldScan = true;
+          break;
         }
-        if (shouldScan) break;
       }
       if (shouldScan) scheduleScan();
     });
 
-    domObserver.observe(document.body, { childList: true, subtree: true });
+    domObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'href'] });
+
+    document.addEventListener('load', (e) => {
+      if (e.target && e.target.tagName === 'IMG') {
+        scheduleScan();
+      }
+    }, true);
   }
 
   if (document.readyState === 'loading') {
