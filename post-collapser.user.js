@@ -2,7 +2,7 @@
 // @name         [Reddit] Post Collapser
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      2.9
+// @version      3.0
 // @description  Adds a toggle button to cleanly collapse posts, displaying the title and timestamp.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -26,7 +26,7 @@
 
     const CONFIG = {
         SELECTORS: {
-            CONTAINER: '#siteTable, .sitetable, div.content',
+            CONTAINER: 'div.content', // Prioritizes the main content wrapper holding all RES sitetables
             POST: '.thing.link'
         },
         CLASSES: {
@@ -83,7 +83,6 @@
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         path.setAttribute('d', pathData);
         svg.appendChild(path);
-
         return svg;
     }
 
@@ -111,7 +110,6 @@
 
             updateGaps();
         });
-
         return btn;
     }
 
@@ -119,14 +117,11 @@
         const titleAnchor = postElement.querySelector('a.title');
         let titleText = titleAnchor ? titleAnchor.textContent : 'Post';
 
-        // Extract and format timestamp
         const timeElem = postElement.querySelector('time.live-timestamp, time');
         if (timeElem) {
             const dtString = timeElem.getAttribute('datetime');
             if (dtString) {
                 const dateObj = new Date(dtString);
-
-                // Ensure date parsing succeeded before formatting
                 if (!isNaN(dateObj.getTime())) {
                     const yyyy = dateObj.getFullYear();
                     const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
@@ -135,7 +130,6 @@
                     const min = String(dateObj.getMinutes()).padStart(2, '0');
                     const ss = String(dateObj.getSeconds()).padStart(2, '0');
 
-                    // Calculate Timezone Offset (e.g., GMT+08)
                     const offsetMin = -dateObj.getTimezoneOffset();
                     const sign = offsetMin >= 0 ? '+' : '-';
                     const offsetHrs = Math.floor(Math.abs(offsetMin) / 60);
@@ -195,6 +189,7 @@
 
             /* Hover states with safe translucent background that works on both light and dark mode */
             .${CONFIG.CLASSES.TOGGLE_BTN}:hover { background: rgba(128, 128, 128, 0.2); }
+
             @media (prefers-color-scheme: dark) {
                 .${CONFIG.CLASSES.TOGGLE_BTN} { color: #aaa; }
                 .${CONFIG.CLASSES.TOGGLE_BTN}:hover { background: rgba(128, 128, 128, 0.3); }
@@ -217,10 +212,8 @@
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
-
-                /* The Descender Fix */
-                line-height: 1.2; /* Expands bounding box to save the descenders */
-                margin-top: 18px; /* Nudged slightly up to compensate for the expanded line-height */
+                line-height: 1.2;
+                margin-top: 18px;
             }
 
             /* Container Shrinkage - Maintains block flow so floated elements remain perfectly static */
@@ -229,7 +222,7 @@
                 margin-bottom: 0 !important;
                 background-color: transparent !important;
                 display: block !important;
-                overflow: hidden !important; /* Clears floats */
+                overflow: hidden !important;
             }
 
             /* Restores gap only if the next post is expanded */
@@ -244,8 +237,8 @@
 
             /* Reveal Title When Collapsed */
             .thing.${CONFIG.CLASSES.COLLAPSED} .${CONFIG.CLASSES.COLLAPSED_TITLE} {
-                display: flex !important; /* Overrides 'none' and makes it a flex container */
-                align-items: center !important; /* Forces the browser to mathematically center the text vertically */
+                display: flex !important;
+                align-items: center !important;
             }
         `;
         document.head.appendChild(style);
@@ -253,16 +246,14 @@
 
     function processPosts(root = document) {
         try {
-            const posts = root.querySelectorAll(CONFIG.SELECTORS.POST);
+            // Highly optimized selector prevents duplicate work on infinite scroll
+            const posts = root.querySelectorAll(`${CONFIG.SELECTORS.POST}:not(.${CONFIG.CLASSES.PROCESSED})`);
             if (!posts.length) return;
 
             const collapsedIds = Storage.get();
 
             requestAnimationFrame(() => {
                 posts.forEach(post => {
-                    const hasButton = post.querySelector(`.${CONFIG.CLASSES.TOGGLE_BTN}`);
-                    if (hasButton) return;
-
                     post.classList.add(CONFIG.CLASSES.PROCESSED);
 
                     const postId = post.getAttribute('data-fullname');
@@ -311,7 +302,7 @@
             if (shouldProcess) {
                 clearTimeout(debounceTimer);
                 debounceTimer = setTimeout(() => {
-                    processPosts(container);
+                    processPosts(document);
                 }, CONFIG.OBSERVER_DEBOUNCE_MS);
             }
         });
