@@ -2,7 +2,7 @@
 // @name         [Reddit] Post Filter
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      2.12
+// @version      3.0
 // @description  Filters Reddit posts dynamically with customizable rules for scores, dates, and keywords.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -39,6 +39,7 @@
             TIME_ELEMENT: 'time.live-timestamp',
             SCORE_ELEMENT: '.score.unvoted',
             UPVOTED_ARROW: '.arrow.upmod',
+            ARCHIVED_ARROW: '.arrow.archived',
             TITLE_ELEMENT: 'p.title a.title',
             FLAIR_ELEMENT: '.linkflairlabel',
             PROMOTED_LINK: '.promotedlink',
@@ -65,6 +66,7 @@
         keywords: '',
         flairs: '',
         highlightThreshold: null,
+        highlightArchived: true,
 
         isAdvancedOpen: false,
         totalPosts: 0,
@@ -173,6 +175,7 @@
                 state.keywords = parsed.keywords ?? '';
                 state.flairs = parsed.flairs ?? '';
                 state.highlightThreshold = parsed.highlightThreshold ?? null;
+                state.highlightArchived = parsed.highlightArchived ?? true;
                 state.isAdvancedOpen = parsed.isAdvancedOpen === true;
             }
         } catch (e) {
@@ -193,6 +196,7 @@
                 keywords: state.keywords,
                 flairs: state.flairs,
                 highlightThreshold: state.highlightThreshold,
+                highlightArchived: state.highlightArchived,
                 isAdvancedOpen: state.isAdvancedOpen
             };
             sessionStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(stateToSave));
@@ -221,8 +225,9 @@
             const flairText = flairEl ? flairEl.textContent.toLowerCase() : '';
             const isPromoted = postEl.classList.contains('promotedlink') || postEl.dataset.promoted === 'true';
             const isTextPost = postEl.classList.contains('self');
+            const isArchived = postEl.querySelector(CONFIG.SELECTORS.ARCHIVED_ARROW) !== null;
 
-            cached = { timestamp, titleText, flairText, isPromoted, isTextPost };
+            cached = { timestamp, titleText, flairText, isPromoted, isTextPost, isArchived };
             state.postCache.set(postEl, cached);
         }
 
@@ -240,6 +245,7 @@
         const data = getPostData(postEl);
         let isVisible = true;
         let isHighlighted = false;
+        let isHighlightedArchived = false;
 
         if (state.hidePromoted && data.isPromoted) isVisible = false;
 
@@ -280,7 +286,11 @@
             isHighlighted = true;
         }
 
-        return { isVisible, isHighlighted };
+        if (isVisible && state.highlightArchived && data.isArchived) {
+            isHighlightedArchived = true;
+        }
+
+        return { isVisible, isHighlighted, isHighlightedArchived };
     }
 
     function executeFilter() {
@@ -305,8 +315,8 @@
             }
 
             postsToProcess.forEach(post => {
-                const { isVisible, isHighlighted } = checkPostVisibility(post, activeKeywordRegexes, activeFlairs);
-                updates.push({ post, isVisible, isHighlighted });
+                const { isVisible, isHighlighted, isHighlightedArchived } = checkPostVisibility(post, activeKeywordRegexes, activeFlairs);
+                updates.push({ post, isVisible, isHighlighted, isHighlightedArchived });
 
                 if (state.needsFullReeval) {
                     state.totalPosts++;
@@ -323,9 +333,10 @@
             }
 
             // Phase 2: Write mutations
-            updates.forEach(({ post, isVisible, isHighlighted }) => {
+            updates.forEach(({ post, isVisible, isHighlighted, isHighlightedArchived }) => {
                 post.classList.toggle('tm-raf-hidden', !isVisible);
                 post.classList.toggle('tm-raf-highlight', isHighlighted);
+                post.classList.toggle('tm-raf-highlight-archived', isHighlightedArchived);
 
                 if (post.parentElement && post.parentElement.classList.contains('spacer')) {
                     post.parentElement.classList.toggle('tm-raf-hidden', !isVisible);
@@ -359,6 +370,9 @@
             if (el) el.checked = false;
         });
 
+        const cbArchived = document.getElementById('tm-raf-highlight-archived-cb');
+        if (cbArchived) cbArchived.checked = true;
+
         const typeSelect = document.getElementById('tm-raf-post-type');
         if (typeSelect) typeSelect.value = 'all';
 
@@ -372,6 +386,7 @@
         state.keywords = '';
         state.flairs = '';
         state.highlightThreshold = null;
+        state.highlightArchived = true;
 
         validateMinMax();
         queueFilter(true);
@@ -486,16 +501,19 @@
                 padding-left: 8px !important;
             }
 
+            /* Archived Highlighting (Overrides regular highlight if both exist due to CSS order) */
+            .tm-raf-highlight-archived {
+                border-left: 4px solid #ff4a08 !important;
+                background-color: rgba(255, 74, 8, 0.20) !important;
+                border-radius: 3px;
+                padding-left: 8px !important;
+            }
+
             /* Layout Structure */
             .tm-raf-section {
                 padding-bottom: 0.75rem;
                 margin-bottom: 0.75rem;
                 border-bottom: 1px dashed rgba(128, 128, 128, 0.3);
-            }
-            .tm-raf-section:last-child {
-                border-bottom: none;
-                padding-bottom: 0;
-                margin-bottom: 0;
             }
             .tm-raf-split-row {
                 display: flex;
@@ -703,78 +721,6 @@
             });
         };
 
-        // --- Basic Section ---
-        const inputMinScore = createInput('tm-raf-min-score', 'number', 'Min (e.g. 10)', state.minScore || '', 'minScore', v => parseInt(v, 10) || 0);
-        const inputMaxScore = createInput('tm-raf-max-score', 'number', 'Max (infinite)', state.maxScore, 'maxScore', v => v.trim() === '' ? null : (parseInt(v, 10) || 0));
-
-        inputMinScore.setAttribute('min', '0');
-        inputMaxScore.setAttribute('min', '0');
-
-        const scoreSplitRow = el('div', { className: 'tm-raf-split-row', style: 'margin-top: 0.5rem;' }, [
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-min-score', textContent: 'Min Upvotes' }), inputMinScore ]),
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-max-score', textContent: 'Max Upvotes' }), inputMaxScore ])
-        ]);
-
-        const inputDateFrom = el('input', {
-            id: 'tm-raf-date-from', type: 'date', className: 'tm-raf-input',
-            value: formatDateForInput(state.dateFrom),
-            onChange: (e) => {
-                state.dateFrom = parseInputDateToLocal(e.target.value, false);
-                queueFilter(true);
-            }
-        });
-
-        const inputDateTo = el('input', {
-            id: 'tm-raf-date-to', type: 'date', className: 'tm-raf-input',
-            value: formatDateForInput(state.dateTo),
-            onChange: (e) => {
-                state.dateTo = parseInputDateToLocal(e.target.value, true);
-                queueFilter(true);
-            }
-        });
-
-        const dateSplitRow = el('div', { className: 'tm-raf-split-row', style: 'margin-bottom: 0;' }, [
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-date-from', textContent: 'Date From' }), inputDateFrom ]),
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-date-to', textContent: 'Date To' }), inputDateTo ])
-        ]);
-
-        const basicSection = el('div', { className: 'tm-raf-section' }, [
-            scoreSplitRow,
-            dateSplitRow
-        ]);
-
-        // --- Advanced Section ---
-        const typeSelect = el('select', {
-            id: 'tm-raf-post-type', className: 'tm-raf-select',
-            onChange: (e) => { state.postType = e.target.value; queueFilter(true); }
-        }, [
-            el('option', { value: 'all', textContent: 'All Posts' }),
-            el('option', { value: 'text', textContent: 'Self/Text Only' }),
-            el('option', { value: 'link', textContent: 'Links Only' })
-        ]);
-
-        typeSelect.value = state.postType;
-
-        const inputHighlight = createInput('tm-raf-highlight', 'number', '> 5000', state.highlightThreshold, 'highlightThreshold', v => v.trim() === '' ? null : (parseInt(v, 10) || 0));
-        inputHighlight.setAttribute('min', '0');
-
-        const typeAndHighlightRow = el('div', { className: 'tm-raf-split-row' }, [
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-post-type', textContent: 'Post Type' }), typeSelect ]),
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-highlight', textContent: 'Highlight If...' }), inputHighlight ])
-        ]);
-
-        const inputKeywords = createInput('tm-raf-keywords', 'text', 'e.g. politics, update', state.keywords, 'keywords', v => v);
-        const keywordsRow = el('div', { className: 'tm-raf-row' }, [
-            el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-keywords' }, [ 'Blocked Keywords', el('span', { className: 'tm-raf-hint', textContent: '(comma-separated)' }) ]),
-            inputKeywords
-        ]);
-
-        const inputFlairs = createInput('tm-raf-flairs', 'text', 'e.g. meme, rant', state.flairs, 'flairs', v => v);
-        const flairsRow = el('div', { className: 'tm-raf-row' }, [
-            el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-flairs' }, [ 'Blocked Flairs', el('span', { className: 'tm-raf-hint', textContent: '(comma-separated)' }) ]),
-            inputFlairs
-        ]);
-
         const createCheckbox = (id, labelText, stateKey) => {
             return el('div', { className: 'tm-raf-checkbox-row' }, [
                 el('input', {
@@ -785,19 +731,114 @@
             ]);
         };
 
-        const checkboxSplitRow = el('div', { className: 'tm-raf-split-row', style: 'margin-bottom: 0;' }, [
+        // --- 1. FILTERS (Basic) ---
+        const inputMinScore = createInput('tm-raf-min-score', 'number', 'Min (e.g. 10)', state.minScore || '', 'minScore', v => parseInt(v, 10) || 0);
+        const inputMaxScore = createInput('tm-raf-max-score', 'number', 'Max (infinite)', state.maxScore, 'maxScore', v => v.trim() === '' ? null : (parseInt(v, 10) || 0));
+        inputMinScore.setAttribute('min', '0');
+        inputMaxScore.setAttribute('min', '0');
+
+        const scoreSplitRow = el('div', { className: 'tm-raf-split-row' }, [
+            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-min-score', textContent: 'Min Upvotes' }), inputMinScore ]),
+            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-max-score', textContent: 'Max Upvotes' }), inputMaxScore ])
+        ]);
+
+        const inputDateFrom = el('input', {
+            id: 'tm-raf-date-from', type: 'date', className: 'tm-raf-input',
+            value: formatDateForInput(state.dateFrom),
+            onChange: (e) => { state.dateFrom = parseInputDateToLocal(e.target.value, false); queueFilter(true); }
+        });
+
+        const inputDateTo = el('input', {
+            id: 'tm-raf-date-to', type: 'date', className: 'tm-raf-input',
+            value: formatDateForInput(state.dateTo),
+            onChange: (e) => { state.dateTo = parseInputDateToLocal(e.target.value, true); queueFilter(true); }
+        });
+
+        const dateSplitRow = el('div', { className: 'tm-raf-split-row', style: 'margin-bottom: 0;' }, [
+            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-date-from', textContent: 'Date From' }), inputDateFrom ]),
+            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-date-to', textContent: 'Date To' }), inputDateTo ])
+        ]);
+
+        const filtersSection = el('div', { className: 'tm-raf-section' }, [
+            scoreSplitRow,
+            dateSplitRow
+        ]);
+
+        // --- 2. POST TYPE (Advanced) ---
+        const typeSelect = el('select', {
+            id: 'tm-raf-post-type', className: 'tm-raf-select',
+            onChange: (e) => { state.postType = e.target.value; queueFilter(true); }
+        }, [
+            el('option', { value: 'all', textContent: 'All Posts' }),
+            el('option', { value: 'text', textContent: 'Self/Text Only' }),
+            el('option', { value: 'link', textContent: 'Links Only' })
+        ]);
+        typeSelect.value = state.postType;
+
+        const typeSelectRow = el('div', { className: 'tm-raf-row', style: 'margin-bottom: 0;' }, [
+            el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-post-type', textContent: 'Post Type' }),
+            typeSelect
+        ]);
+
+        const postTypeSection = el('div', { className: 'tm-raf-section' }, [
+            typeSelectRow
+        ]);
+
+        // --- 3. HIGHLIGHTS (Advanced) ---
+        const inputHighlight = createInput('tm-raf-highlight', 'number', '> 5000', state.highlightThreshold, 'highlightThreshold', v => v.trim() === '' ? null : (parseInt(v, 10) || 0));
+        inputHighlight.setAttribute('min', '0');
+
+        const highlightThresholdRow = el('div', { className: 'tm-raf-row', style: 'margin-bottom: 0.5rem;' }, [
+            el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-highlight', textContent: 'Highlight If Score >' }),
+            inputHighlight
+        ]);
+
+        const highlightArchivedContainer = el('div', { style: 'margin-bottom: 0;' }, [
+            createCheckbox('tm-raf-highlight-archived-cb', 'Highlight Archived', 'highlightArchived')
+        ]);
+
+        const highlightsSection = el('div', { className: 'tm-raf-section' }, [
+            highlightThresholdRow,
+            highlightArchivedContainer
+        ]);
+
+        // --- 4. HIDES (Advanced) ---
+        const hideCheckboxSplitRow = el('div', { className: 'tm-raf-split-row', style: 'margin-bottom: 0;' }, [
             el('div', { className: 'tm-raf-split-col' }, [ createCheckbox('tm-raf-hide-upvoted', 'Hide Upvoted', 'hideUpvoted') ]),
             el('div', { className: 'tm-raf-split-col' }, [ createCheckbox('tm-raf-hide-promoted', 'Hide Promoted', 'hidePromoted') ])
         ]);
 
+        const hidesSection = el('div', { className: 'tm-raf-section' }, [
+            hideCheckboxSplitRow
+        ]);
+
+        // --- 5. BLOCKS (Advanced) ---
+        const inputKeywords = createInput('tm-raf-keywords', 'text', 'e.g. politics, update', state.keywords, 'keywords', v => v);
+        const keywordsRow = el('div', { className: 'tm-raf-row' }, [
+            el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-keywords' }, [ 'Blocked Keywords', el('span', { className: 'tm-raf-hint', textContent: '(comma-separated)' }) ]),
+            inputKeywords
+        ]);
+
+        const inputFlairs = createInput('tm-raf-flairs', 'text', 'e.g. meme, rant', state.flairs, 'flairs', v => v);
+        const flairsRow = el('div', { className: 'tm-raf-row', style: 'margin-bottom: 0;' }, [
+            el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-flairs' }, [ 'Blocked Flairs', el('span', { className: 'tm-raf-hint', textContent: '(comma-separated)' }) ]),
+            inputFlairs
+        ]);
+
+        const blocksSection = el('div', { className: 'tm-raf-section' }, [
+            keywordsRow,
+            flairsRow
+        ]);
+
+        // --- Assembly ---
         const advancedContainer = el('div', {
             id: 'tm-raf-advanced-container',
-            className: `tm-raf-advanced-container tm-raf-section ${state.isAdvancedOpen ? 'open' : ''}`
+            className: `tm-raf-advanced-container ${state.isAdvancedOpen ? 'open' : ''}`
         }, [
-            typeAndHighlightRow,
-            keywordsRow,
-            flairsRow,
-            checkboxSplitRow
+            postTypeSection,
+            highlightsSection,
+            hidesSection,
+            blocksSection
         ]);
 
         const advancedToggleIcon = el('span', { textContent: state.isAdvancedOpen ? '▲' : '▼', style: 'margin-left: 4px; font-size: 0.65rem;' });
@@ -810,7 +851,7 @@
                 state.isAdvancedOpen = !state.isAdvancedOpen;
                 advancedContainer.classList.toggle('open', state.isAdvancedOpen);
                 advancedToggleIcon.textContent = state.isAdvancedOpen ? '▲' : '▼';
-                saveState(); // Saved immediately on toggle since this avoids triggering a full filter queue
+                saveState();
             },
             onKeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); advancedToggle.click(); } }
         }, [
@@ -829,9 +870,8 @@
             btnReset
         ]);
 
-        // --- Assembly using Native Reddit Classes ---
         const panelBody = el('div', { id: 'tm-raf-body', className: 'content' }, [
-            basicSection,
+            filtersSection,
             advancedToggle,
             advancedContainer,
             footerSection
