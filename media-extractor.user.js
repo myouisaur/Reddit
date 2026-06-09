@@ -2,7 +2,7 @@
 // @name         [Reddit] Media Extractor
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      4.10
+// @version      4.11
 // @description  Adds floating open and download buttons to Reddit images and videos.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -269,8 +269,10 @@
             gap: 8px;
             z-index: 2147483647 !important;
             pointer-events: none;
-            opacity: 0;
-            transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+            /* Bug fix: Transition visibility to allow child elements to handle their own opacity fade */
+            visibility: hidden;
+            transition: visibility 0s linear 0.3s;
         }
 
         /* Subtle radial shadow behind the container */
@@ -282,6 +284,8 @@
             background: radial-gradient(ellipse at center, rgba(0,0,0,0.22) 0%, rgba(0,0,0,0) 65%);
             pointer-events: none;
             border-radius: 50%;
+            opacity: 0;
+            transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
         ul > li .tm-btn-container,
@@ -292,8 +296,14 @@
 
         .xiv-wrap:hover > .tm-btn-container,
         .tm-btn-container:hover {
-            opacity: 1 !important;
+            visibility: visible;
             pointer-events: auto !important;
+            transition: visibility 0s;
+        }
+
+        .xiv-wrap:hover > .tm-btn-container::before,
+        .tm-btn-container:hover::before {
+            opacity: 1;
         }
 
         /* ── Button shell ────────────────────────────── */
@@ -312,6 +322,11 @@
             flex-shrink: 0;
             color: rgba(255, 255, 255, 0.96);
 
+            /* Hardware acceleration & direct opacity transition to prevent Chromium backdrop-filter snapping */
+            opacity: 0;
+            will-change: transform, opacity;
+            transform: translateZ(0);
+
             /* Frosted glass base */
             background: rgba(255, 255, 255, 0.14);
             backdrop-filter: blur(24px) saturate(180%) brightness(1.1);
@@ -328,8 +343,14 @@
                 0 2px  6px         rgba(0,0,0,0.20);
 
             transition:
+                opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1),
                 box-shadow 0.35s ease,
                 background 0.35s ease;
+        }
+
+        .xiv-wrap:hover .tm-action-btn,
+        .tm-btn-container:hover .tm-action-btn {
+            opacity: 1;
         }
 
         /* ── Gradient border ring (mask-composite trick) ── */
@@ -392,7 +413,9 @@
 
         /* ── Active / pressed state ── */
         .tm-action-btn:active {
-            transition: box-shadow 0.10s ease;
+            transition:
+                opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                box-shadow 0.10s ease;
             box-shadow:
                 inset 0  1.5px 0  rgba(255,255,255,0.75),
                 inset 0 -1.5px 0  rgba(255,255,255,0.06),
