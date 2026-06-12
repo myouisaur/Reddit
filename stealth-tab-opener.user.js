@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [Reddit] Stealth Tab Opener
-// @namespace    https://github.com/myouisaur/userscripts
-// @icon         https://www.reddit.com/favicon.ico
-// @version      2.5
+// @namespace    https://github.com/myouisaur/Reddit
+// @icon         https://www.redditstatic.com/shreddit/assets/favicon/192x192.png
+// @version      2.6
 // @description  Forces all links clicked on Reddit that open a new tab to do so silently in the background without stealing focus.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -118,21 +118,37 @@
     }
 
     /**
+     * Helper to determine if a node is an interactive UI element.
+     */
+    function isInteractiveUI(node) {
+        if (!node) return false;
+        if (node.tagName === 'BUTTON' || node.tagName === 'INPUT' || node.tagName === 'TEXTAREA' || node.tagName === 'SELECT') return true;
+        if (node.getAttribute && node.getAttribute('role') === 'button') return true;
+        return false;
+    }
+
+    /**
      * Crosses Shadow DOM boundaries to locate the true anchor tag.
+     * Aborts safely if it encounters nested buttons or interactive UI (like Media Extractor).
      */
     function findAnchorInPath(e) {
         if (typeof e.composedPath === 'function') {
             for (const node of e.composedPath()) {
+                // If we hit a button or interactive element BEFORE an anchor, respect the UI and abort.
+                if (isInteractiveUI(node)) return null;
                 if (node.tagName === 'A' && node.href) return node;
             }
         }
 
+        // Fallback traversal for older architectures
         let node = e.target;
-        while (node && node.tagName !== 'A') {
+        while (node && node !== document.body) {
+            if (isInteractiveUI(node)) return null;
+            if (node.tagName === 'A' && node.href) return node;
             node = node.parentElement;
         }
 
-        return (node && node.href) ? node : null;
+        return null;
     }
 
     /**
