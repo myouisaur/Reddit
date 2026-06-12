@@ -2,12 +2,13 @@
 // @name         [Reddit] RES Viewport-Fit Media
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      1.8
+// @version      1.9
 // @description  Automatically sizes expanded media to fit the visible screen space as you scroll.
 // @author       Xiv
 // @match        *://*.reddit.com/*
 // @grant        GM_addStyle
 // @noframes
+// @run-at       document-start
 // @updateURL    https://myouisaur.github.io/Reddit/RES-viewport.user.js
 // @downloadURL  https://myouisaur.github.io/Reddit/RES-viewport.user.js
 // ==/UserScript==
