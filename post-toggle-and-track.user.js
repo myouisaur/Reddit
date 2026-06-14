@@ -8,8 +8,8 @@
 // @noframes
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @updateURL    https://myouisaur.github.io/Reddit/post-toggle-track.user.js
-// @downloadURL  https://myouisaur.github.io/Reddit/post-toggle-track.user.js
+// @updateURL    https://myouisaur.github.io/Reddit/post-toggle-and-track.user.js
+// @downloadURL  https://myouisaur.github.io/Reddit/post-toggle-and-track.user.js
 // ==/UserScript==
 
 (function () {
