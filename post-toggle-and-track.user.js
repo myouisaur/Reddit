@@ -1,3 +1,4 @@
+// ==UserScript==
 // @name         [Reddit] Post Toggle & Track
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
