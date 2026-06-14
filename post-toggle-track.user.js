@@ -1,16 +1,15 @@
-// ==UserScript==
-// @name         [Reddit] Post Collapser
+// @name         [Reddit] Post Toggle & Track
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      4.1
-// @description  Adds a toggle button to cleanly collapse posts, displaying the title and timestamp.
+// @version      4.3
+// @description  Adds a toggle button to cleanly collapse posts and a tracker for downloaded posts.
 // @author       Xiv
 // @match        *://*.reddit.com/*
 // @noframes
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @updateURL    https://myouisaur.github.io/Reddit/post-collapser.user.js
-// @downloadURL  https://myouisaur.github.io/Reddit/post-collapser.user.js
+// @updateURL    https://myouisaur.github.io/Reddit/post-toggle-track.user.js
+// @downloadURL  https://myouisaur.github.io/Reddit/post-toggle-track.user.js
 // ==/UserScript==
 
 (function () {
@@ -39,66 +38,74 @@
             LAST_COLLAPSED: 'xiv-last-collapsed',
             ANIMATING: 'xiv-animating',
             HIDDEN_CONTENT: 'xiv-hidden-content',
+            ACTION_CONTAINER: 'xiv-action-container',
             TOGGLE_BTN: 'xiv-collapse-toggle',
+            DOWNLOAD_BTN: 'xiv-download-btn',
+            DOWNLOADED: 'xiv-downloaded',
             ICON_OPEN: 'xiv-icon-open',
             ICON_CLOSED: 'xiv-icon-closed',
+            ICON_DOWNLOAD: 'xiv-icon-download',
             COLLAPSED_TITLE: 'xiv-collapsed-title'
         },
         SVG: {
             OPEN: 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z',
-            CLOSED: 'M11.83 9L15 12.16V12a3 3 0 00-3-3h-.17zm-4.3.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.3-3.8c4.28 0 8.01 2.37 10.02 6.01-.4.72-.88 1.38-1.4 1.98l-1.52-1.52A9.55 9.55 0 0019.8 12c-1.69-3.26-5.06-5.5-8.8-5.5-1.14 0-2.23.2-3.23.56l1.62 1.62c.5-.06 1.03-.08 1.61-.08zm-9.35-1L1.27 3.73 3.65 6.1C2.33 7.71 1.45 9.75 1 12c1.73 4.39 6 7.5 11 7.5 1.83 0 3.53-.47 5.06-1.28l2.67 2.67 1.27-1.27L2.48 2z'
+            CLOSED: 'M11.83 9L15 12.16V12a3 3 0 00-3-3h-.17zm-4.3.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.3-3.8c4.28 0 8.01 2.37 10.02 6.01-.4.72-.88 1.38-1.4 1.98l-1.52-1.52A9.55 9.55 0 0019.8 12c-1.69-3.26-5.06-5.5-8.8-5.5-1.14 0-2.23.2-3.23.56l1.62 1.62c.5-.06 1.03-.08 1.61-.08zm-9.35-1L1.27 3.73 3.65 6.1C2.33 7.71 1.45 9.75 1 12c1.73 4.39 6 7.5 11 7.5 1.83 0 3.53-.47 5.06-1.28l2.67 2.67 1.27-1.27L2.48 2z',
+            DOWNLOAD: 'M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z'
+        },
+        STORAGE_KEYS: {
+            COLLAPSED: 'xiv_collapsed_posts',
+            DOWNLOADED: 'xiv_downloaded_posts'
         },
         OBSERVER_DEBOUNCE_MS: 100,
         ANIMATION_MS: 300,
         COLLAPSED_HEIGHT: 36,
-        STORAGE_KEY: 'xiv_collapsed_posts',
         MAX_STORED_IDS: 1000
     };
 
     let debounceTimer = null;
 
     const Storage = {
-        _data: null,
-        _writeTimer: null,
+        _data: {},
+        _writeTimer: {},
 
-        get: () => {
-            if (Storage._data) return Storage._data;
+        get: (key) => {
+            if (Storage._data[key]) return Storage._data[key];
             try {
-                const parsed = JSON.parse(GM_getValue(CONFIG.STORAGE_KEY, '[]'));
+                const parsed = JSON.parse(GM_getValue(key, '[]'));
                 if (Array.isArray(parsed) && parsed.every(item => typeof item === 'string')) {
-                    Storage._data = parsed;
+                    Storage._data[key] = parsed;
                 } else {
-                    Storage._data = [];
+                    Storage._data[key] = [];
                 }
             } catch (e) {
-                Storage._data = [];
+                Storage._data[key] = [];
             }
-            return Storage._data;
+            return Storage._data[key];
         },
 
-        _scheduleWrite: () => {
-            clearTimeout(Storage._writeTimer);
-            Storage._writeTimer = setTimeout(() => {
-                GM_setValue(CONFIG.STORAGE_KEY, JSON.stringify(Storage._data));
+        _scheduleWrite: (key) => {
+            clearTimeout(Storage._writeTimer[key]);
+            Storage._writeTimer[key] = setTimeout(() => {
+                GM_setValue(key, JSON.stringify(Storage._data[key]));
             }, 300);
         },
 
-        add: (id) => {
+        add: (key, id) => {
             if (!id) return;
-            const arr = Storage.get();
+            const arr = Storage.get(key);
             if (!arr.includes(id)) {
                 arr.push(id);
                 if (arr.length > CONFIG.MAX_STORED_IDS) arr.shift();
-                Storage._scheduleWrite();
+                Storage._scheduleWrite(key);
             }
         },
 
-        remove: (id) => {
+        remove: (key, id) => {
             if (!id) return;
-            const arr = Storage.get();
+            const arr = Storage.get(key);
             const initialLength = arr.length;
-            Storage._data = arr.filter(x => x !== id);
-            if (Storage._data.length !== initialLength) Storage._scheduleWrite();
+            Storage._data[key] = arr.filter(x => x !== id);
+            if (Storage._data[key].length !== initialLength) Storage._scheduleWrite(key);
         }
     };
 
@@ -132,7 +139,6 @@
 
         // Force reflow
         void post.offsetHeight;
-
         post.classList.remove(CONFIG.CLASSES.COLLAPSED);
         post.style.maxHeight = targetHeight + 'px';
 
@@ -156,12 +162,12 @@
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         path.setAttribute('d', pathData);
         svg.appendChild(path);
-
         return svg;
     }
 
     function getAdjacentPost(postElement, direction) {
-        let sibling = direction === 'next' ? postElement.nextElementSibling : postElement.previousElementSibling;
+        let sibling = direction === 'next' ?
+            postElement.nextElementSibling : postElement.previousElementSibling;
         while (sibling) {
             if (sibling.matches && sibling.matches(CONFIG.SELECTORS.POST)) return sibling;
             sibling = direction === 'next' ? sibling.nextElementSibling : sibling.previousElementSibling;
@@ -206,7 +212,6 @@
 
     function createCollapsedTitle(postElement) {
         const parts = [];
-
         const titleAnchor = postElement.querySelector('a.title');
         parts.push(titleAnchor ? titleAnchor.textContent : 'Post');
 
@@ -257,17 +262,40 @@
             btn.setAttribute('title', isCollapsed ? 'Expand Post' : 'Collapse Post');
 
             if (isCollapsed) {
-                Storage.add(postId);
+                Storage.add(CONFIG.STORAGE_KEYS.COLLAPSED, postId);
                 collapsePost(postElement);
             } else {
-                Storage.remove(postId);
+                Storage.remove(CONFIG.STORAGE_KEYS.COLLAPSED, postId);
                 expandPost(postElement);
             }
 
             updateGapState(postElement);
             updateGapState(getAdjacentPost(postElement, 'prev'));
         });
+        return btn;
+    }
 
+    function createDownloadButton(postElement, postId, isInitiallyDownloaded) {
+        const btn = document.createElement('button');
+        btn.className = CONFIG.CLASSES.DOWNLOAD_BTN;
+        btn.setAttribute('aria-label', 'Toggle Download Status');
+        btn.setAttribute('title', isInitiallyDownloaded ? 'Mark as Not Downloaded' : 'Mark as Downloaded');
+
+        btn.appendChild(createSVGIcon(CONFIG.SVG.DOWNLOAD, CONFIG.CLASSES.ICON_DOWNLOAD));
+
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const isDownloaded = postElement.classList.toggle(CONFIG.CLASSES.DOWNLOADED);
+            btn.setAttribute('title', isDownloaded ? 'Mark as Not Downloaded' : 'Mark as Downloaded');
+
+            if (isDownloaded) {
+                Storage.add(CONFIG.STORAGE_KEYS.DOWNLOADED, postId);
+            } else {
+                Storage.remove(CONFIG.STORAGE_KEYS.DOWNLOADED, postId);
+            }
+        });
         return btn;
     }
 
@@ -279,39 +307,60 @@
                 border-left: 3px solid rgba(128, 128, 128, 0.4) !important;
                 padding-left: 6px !important;
                 overflow: hidden !important;
+                transition: background-color 0.2s ease !important;
+            }
+
+            .thing.${CONFIG.CLASSES.DOWNLOADED} {
+                background-color: rgba(34, 197, 94, 0.08) !important;
             }
 
             .thing.${CONFIG.CLASSES.ANIMATING} {
                 transition: max-height ${CONFIG.ANIMATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1), margin-bottom ${CONFIG.ANIMATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) !important;
             }
 
-            .${CONFIG.CLASSES.TOGGLE_BTN} {
+            .${CONFIG.CLASSES.ACTION_CONTAINER} {
                 float: left;
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+                margin: 8px 8px 8px 0;
+            }
+
+            .${CONFIG.CLASSES.TOGGLE_BTN}, .${CONFIG.CLASSES.DOWNLOAD_BTN} {
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 width: 20px;
                 height: 20px;
-                margin: 8px 8px 8px 0; /* Vertically centers perfectly in a 36px block */
                 background: transparent;
                 border: none;
                 cursor: pointer;
                 color: inherit;
                 opacity: 0.5;
                 border-radius: 4px;
-                transition: background-color 0.2s ease, outline 0.2s ease, opacity 0.2s ease;
+                transition: background-color 0.2s ease, outline 0.2s ease, opacity 0.2s ease, color 0.2s ease;
                 padding: 0;
             }
 
-            .${CONFIG.CLASSES.TOGGLE_BTN}:hover {
+            .${CONFIG.CLASSES.TOGGLE_BTN}:hover, .${CONFIG.CLASSES.DOWNLOAD_BTN}:hover {
                 background: rgba(128, 128, 128, 0.2);
                 opacity: 0.9;
             }
 
-            .${CONFIG.CLASSES.TOGGLE_BTN}:focus-visible {
+            .${CONFIG.CLASSES.TOGGLE_BTN}:focus-visible, .${CONFIG.CLASSES.DOWNLOAD_BTN}:focus-visible {
                 outline: 2px solid rgba(128, 128, 128, 0.8);
                 outline-offset: 2px;
                 opacity: 1;
+            }
+
+            .thing.${CONFIG.CLASSES.DOWNLOADED} .${CONFIG.CLASSES.DOWNLOAD_BTN} {
+                color: #22c55e !important;
+                opacity: 1 !important;
+            }
+
+            /* Hides the download button completely when the post is collapsed */
+            .thing.${CONFIG.CLASSES.COLLAPSED} .${CONFIG.CLASSES.DOWNLOAD_BTN} {
+                display: none !important;
             }
 
             .${CONFIG.CLASSES.TOGGLE_BTN} .${CONFIG.CLASSES.ICON_CLOSED} { display: none; }
@@ -340,16 +389,17 @@
                 pointer-events: auto;
             }
 
-            .thing > *:not(.${CONFIG.CLASSES.TOGGLE_BTN}):not(.${CONFIG.CLASSES.COLLAPSED_TITLE}) {
+            .thing > *:not(.${CONFIG.CLASSES.ACTION_CONTAINER}):not(.${CONFIG.CLASSES.COLLAPSED_TITLE}) {
                 transition: opacity 0.2s ease;
             }
 
-            .thing.${CONFIG.CLASSES.COLLAPSED} > *:not(.${CONFIG.CLASSES.TOGGLE_BTN}):not(.${CONFIG.CLASSES.COLLAPSED_TITLE}) {
+            /* Hide everything EXCEPT the container and the title when collapsed */
+            .thing.${CONFIG.CLASSES.COLLAPSED} > *:not(.${CONFIG.CLASSES.ACTION_CONTAINER}):not(.${CONFIG.CLASSES.COLLAPSED_TITLE}) {
                 opacity: 0 !important;
                 pointer-events: none !important;
             }
 
-            .thing.${CONFIG.CLASSES.HIDDEN_CONTENT} > *:not(.${CONFIG.CLASSES.TOGGLE_BTN}):not(.${CONFIG.CLASSES.COLLAPSED_TITLE}) {
+            .thing.${CONFIG.CLASSES.HIDDEN_CONTENT} > *:not(.${CONFIG.CLASSES.ACTION_CONTAINER}):not(.${CONFIG.CLASSES.COLLAPSED_TITLE}) {
                 display: none !important;
             }
 
@@ -368,7 +418,6 @@
     function processPosts(root = document) {
         try {
             const posts = [];
-
             if (root.matches && root.matches(CONFIG.SELECTORS.POST) && !root.classList.contains(CONFIG.CLASSES.PROCESSED)) {
                 posts.push(root);
             }
@@ -380,7 +429,8 @@
 
             if (!posts.length) return;
 
-            const collapsedIds = Storage.get();
+            const collapsedIds = Storage.get(CONFIG.STORAGE_KEYS.COLLAPSED);
+            const downloadedIds = Storage.get(CONFIG.STORAGE_KEYS.DOWNLOADED);
 
             requestAnimationFrame(() => {
                 posts.forEach(post => {
@@ -393,19 +443,31 @@
 
                     const postId = post.getAttribute('data-fullname');
                     const isInitiallyCollapsed = collapsedIds.includes(postId);
+                    const isInitiallyDownloaded = downloadedIds.includes(postId);
+
+                    if (isInitiallyDownloaded) {
+                        post.classList.add(CONFIG.CLASSES.DOWNLOADED);
+                    }
+
+                    const actionContainer = document.createElement('div');
+                    actionContainer.className = CONFIG.CLASSES.ACTION_CONTAINER;
 
                     const btn = createToggleButton(post, postId, isInitiallyCollapsed);
+                    const dlBtn = createDownloadButton(post, postId, isInitiallyDownloaded);
                     const collapsedTitle = createCollapsedTitle(post);
+
+                    actionContainer.appendChild(btn);
+                    actionContainer.appendChild(dlBtn);
 
                     const rankElem = post.querySelector('.rank');
                     if (rankElem) {
-                        post.insertBefore(btn, rankElem);
+                        post.insertBefore(actionContainer, rankElem);
                         post.insertBefore(collapsedTitle, rankElem);
                     } else if (post.firstChild) {
-                        post.insertBefore(btn, post.firstChild);
-                        post.insertBefore(collapsedTitle, post.firstChild.nextSibling);
+                        post.insertBefore(actionContainer, post.firstChild);
+                        post.insertBefore(collapsedTitle, actionContainer.nextSibling);
                     } else {
-                        post.appendChild(btn);
+                        post.appendChild(actionContainer);
                         post.appendChild(collapsedTitle);
                     }
 
@@ -458,7 +520,6 @@
                 }, CONFIG.OBSERVER_DEBOUNCE_MS);
             }
         });
-
         observer.observe(container, { childList: true, subtree: true });
     }
 
