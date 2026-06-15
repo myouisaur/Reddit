@@ -2,8 +2,8 @@
 // @name         [Reddit] Post Filter
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      3.5
-// @description  Filters Reddit posts dynamically with customizable rules for scores, dates, and keywords.
+// @version      4.0
+// @description  Filters Reddit posts dynamically with customizable rules for scores, dates, subreddits, and keywords.
 // @author       Xiv
 // @match        *://*.reddit.com/*
 // @noframes
@@ -43,6 +43,7 @@
             TITLE_ELEMENT: 'p.title a.title',
             FLAIR_ELEMENT: '.linkflairlabel',
             PROMOTED_LINK: '.promotedlink',
+            SUBREDDIT_LINK: 'a.subreddit, .subreddit.hover',
             SEARCH_BOX: '#search'
         },
         STORAGE_KEY: 'tm_reddit_filter_session_v3'
@@ -61,6 +62,7 @@
         minScore: 0,
         maxScore: null,
         hideUpvoted: false,
+        showUpvoted: false,
         hidePromoted: false,
         postType: 'all',
 
@@ -79,7 +81,11 @@
         isMutating: false,
         needsFullReeval: true,
         postCache: new WeakMap(),
-        io: null
+        io: null,
+
+        // Volatile state (not saved in sessionStorage)
+        hiddenSubreddits: new Set(),
+        knownSubreddits: new Set()
     };
 
     // ==========================================
@@ -137,12 +143,13 @@
     function isFilterActive() {
         return state.minScore > 0 ||
                state.maxScore !== null || state.dateFrom !== null ||
-               state.dateTo !== null || state.hideUpvoted || state.hidePromoted ||
+               state.dateTo !== null || state.hideUpvoted || state.showUpvoted || state.hidePromoted ||
                state.showKeywords.trim() !== '' ||
                state.showFlairs.trim() !== '' ||
                state.keywords.trim() !== '' ||
                state.flairs.trim() !== '' ||
-               state.postType !== 'all' || state.highlightThreshold !== null;
+               state.postType !== 'all' || state.highlightThreshold !== null ||
+               state.hiddenSubreddits.size > 0;
     }
 
     function splitAndClean(str) {
@@ -176,6 +183,7 @@
                 state.minScore = parsed.minScore ?? 0;
                 state.maxScore = parsed.maxScore ?? null;
                 state.hideUpvoted = parsed.hideUpvoted ?? false;
+                state.showUpvoted = parsed.showUpvoted ?? false;
                 state.hidePromoted = parsed.hidePromoted ?? false;
                 state.postType = parsed.postType ?? 'all';
                 state.showKeywords = parsed.showKeywords ?? '';
@@ -199,6 +207,7 @@
                 minScore: state.minScore,
                 maxScore: state.maxScore,
                 hideUpvoted: state.hideUpvoted,
+                showUpvoted: state.showUpvoted,
                 hidePromoted: state.hidePromoted,
                 postType: state.postType,
                 showKeywords: state.showKeywords,
@@ -234,11 +243,14 @@
             const flairEl = postEl.querySelector(CONFIG.SELECTORS.FLAIR_ELEMENT);
             const flairText = flairEl ? flairEl.textContent.toLowerCase() : '';
 
+            const subEl = postEl.querySelector(CONFIG.SELECTORS.SUBREDDIT_LINK);
+            const subreddit = subEl ? subEl.textContent.trim().replace(/^r\//i, '') : null;
+
             const isPromoted = postEl.classList.contains('promotedlink') || postEl.dataset.promoted === 'true';
             const isTextPost = postEl.classList.contains('self');
             const isArchived = postEl.querySelector(CONFIG.SELECTORS.ARCHIVED_ARROW) !== null;
 
-            cached = { timestamp, titleText, flairText, isPromoted, isTextPost, isArchived };
+            cached = { timestamp, titleText, flairText, subreddit, isPromoted, isTextPost, isArchived };
             state.postCache.set(postEl, cached);
         }
 
@@ -258,7 +270,12 @@
         let isHighlighted = false;
         let isHighlightedArchived = false;
 
-        if (state.hidePromoted && data.isPromoted) isVisible = false;
+        // Subreddit Filter Check
+        if (isVisible && data.subreddit && state.hiddenSubreddits.has(data.subreddit)) {
+            isVisible = false;
+        }
+
+        if (isVisible && state.hidePromoted && data.isPromoted) isVisible = false;
 
         if (isVisible && state.postType !== 'all') {
             if (state.postType === 'text' && !data.isTextPost) isVisible = false;
@@ -269,7 +286,9 @@
         if (isVisible && state.minScore > 0 && data.score < state.minScore) isVisible = false;
         if (isVisible && validMax !== null && data.score > validMax) isVisible = false;
 
+        // Upvoted State Filters
         if (isVisible && state.hideUpvoted && data.isUpvoted) isVisible = false;
+        if (isVisible && state.showUpvoted && !data.isUpvoted) isVisible = false;
 
         if (isVisible && data.timestamp) {
             if (state.dateFrom && data.timestamp < state.dateFrom) isVisible = false;
@@ -328,7 +347,7 @@
             isHighlightedArchived = true;
         }
 
-        return { isVisible, isHighlighted, isHighlightedArchived };
+        return { isVisible, isHighlighted, isHighlightedArchived, subreddit: data.subreddit };
     }
 
     function executeFilter() {
@@ -344,10 +363,11 @@
             const activeShowKeywordRegexes = buildKeywordRegexes(state.showKeywords);
             const activeShowFlairs = splitAndClean(state.showFlairs);
 
-            // Phase 1: Read metrics (Prevents layout thrashing)
+            // Phase 1: Read metrics
             const updates = [];
             let newlyProcessed = 0;
             let newlyVisible = 0;
+            let discoveredNewSubreddits = false;
 
             if (state.needsFullReeval) {
                 state.totalPosts = 0;
@@ -355,9 +375,15 @@
             }
 
             postsToProcess.forEach(post => {
-                const { isVisible, isHighlighted, isHighlightedArchived } = checkPostVisibility(
+                const { isVisible, isHighlighted, isHighlightedArchived, subreddit } = checkPostVisibility(
                     post, activeKeywordRegexes, activeFlairs, activeShowKeywordRegexes, activeShowFlairs
                 );
+
+                if (subreddit && !state.knownSubreddits.has(subreddit)) {
+                    state.knownSubreddits.add(subreddit);
+                    discoveredNewSubreddits = true;
+                }
+
                 updates.push({ post, isVisible, isHighlighted, isHighlightedArchived });
 
                 if (state.needsFullReeval) {
@@ -387,6 +413,10 @@
                 post.dataset.tmEval = 'true';
             });
 
+            if (discoveredNewSubreddits || state.needsFullReeval) {
+                updateSubredditDropdownUI();
+            }
+
             state.needsFullReeval = false;
 
             saveState();
@@ -408,7 +438,7 @@
             if (el) el.value = '';
         });
 
-        ['tm-raf-hide-upvoted', 'tm-raf-hide-promoted'].forEach(id => {
+        ['tm-raf-hide-upvoted', 'tm-raf-show-upvoted', 'tm-raf-hide-promoted'].forEach(id => {
             const el = document.getElementById(id);
             if (el) el.checked = false;
         });
@@ -424,6 +454,7 @@
         state.dateFrom = null;
         state.dateTo = null;
         state.hideUpvoted = false;
+        state.showUpvoted = false;
         state.hidePromoted = false;
         state.postType = 'all';
         state.showKeywords = '';
@@ -432,7 +463,9 @@
         state.flairs = '';
         state.highlightThreshold = null;
         state.highlightArchived = true;
+        state.hiddenSubreddits.clear();
 
+        updateSubredditDropdownUI();
         validateMinMax();
         queueFilter(true);
     }
@@ -579,6 +612,91 @@
                 gap: 0.25rem;
             }
 
+            /* Subreddit Multi-Select Inline Accordion */
+            .tm-raf-dropdown {
+                position: relative;
+                width: 100%;
+            }
+            .tm-raf-sub-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 0.25rem;
+            }
+            .tm-raf-sub-reset {
+                background: transparent;
+                border: none;
+                color: #d22;
+                font-size: 0.65rem;
+                cursor: pointer;
+                padding: 0;
+                font-weight: bold;
+                opacity: 0;
+                pointer-events: none;
+                transition: opacity 0.2s ease;
+            }
+            .tm-raf-sub-reset.visible {
+                opacity: 1;
+                pointer-events: auto;
+            }
+            .tm-raf-sub-reset:hover {
+                text-decoration: underline;
+            }
+            .tm-raf-dropdown-btn {
+                cursor: pointer;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                user-select: none;
+                overflow: hidden;
+                transition: border-radius 0.2s;
+            }
+            .tm-raf-dropdown-btn.open {
+                border-bottom-left-radius: 0;
+                border-bottom-right-radius: 0;
+                border-bottom-color: transparent;
+            }
+            #tm-raf-sub-btn-text {
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                margin-right: 8px;
+            }
+            .tm-raf-dropdown-menu {
+                display: none;
+                width: 100%;
+                border: 1px solid rgba(128, 128, 128, 0.3);
+                border-top: none;
+                border-bottom-left-radius: 0.2rem;
+                border-bottom-right-radius: 0.2rem;
+                box-sizing: border-box;
+                background-color: transparent; /* Inherits naturally */
+                color: inherit;
+            }
+            .tm-raf-dropdown-menu.open {
+                display: block;
+            }
+            .tm-raf-sub-search {
+                padding: 4px;
+                border-bottom: 1px dashed rgba(128, 128, 128, 0.3);
+            }
+            .tm-raf-sub-list {
+                max-height: 200px;
+                overflow-y: auto;
+            }
+            .tm-raf-sub-item {
+                padding: 6px 8px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-size: 0.8rem;
+                cursor: pointer;
+                user-select: none;
+            }
+            .tm-raf-sub-item:hover {
+                background-color: rgba(128, 128, 128, 0.1);
+            }
+
             /* New layout elements */
             .tm-raf-inline-divider {
                 display: flex;
@@ -662,12 +780,6 @@
                 outline: none;
                 border-color: rgba(128, 128, 128, 0.8);
                 box-shadow: 0 0 0 2px rgba(128, 128, 128, 0.2);
-            }
-
-            @media (prefers-color-scheme: dark) {
-                .tm-raf-input[type="date"]::-webkit-calendar-picker-indicator {
-                    filter: invert(1);
-                }
             }
 
             .tm-raf-input-error {
@@ -786,6 +898,68 @@
         document.head.appendChild(el('style', { id: 'tm-raf-styles', textContent: css }));
     }
 
+    function updateSubredditDropdownUI() {
+        const list = document.getElementById('tm-raf-sub-list');
+        const btnText = document.getElementById('tm-raf-sub-btn-text');
+        const subBtn = document.getElementById('tm-raf-sub-btn');
+        const resetBtn = document.getElementById('tm-raf-sub-reset-btn');
+
+        if (!list || !btnText || !subBtn) return;
+
+        if (resetBtn) {
+            resetBtn.classList.toggle('visible', state.hiddenSubreddits.size > 0);
+        }
+
+        if (state.knownSubreddits.size <= 1) {
+            btnText.textContent = 'No subreddits to filter';
+            subBtn.style.pointerEvents = 'none';
+            subBtn.style.opacity = '0.7';
+            return;
+        }
+
+        subBtn.style.pointerEvents = 'auto';
+        subBtn.style.opacity = '1';
+        btnText.textContent = `Select Subreddits (${state.knownSubreddits.size - state.hiddenSubreddits.size} of ${state.knownSubreddits.size})`;
+
+        // Re-render the sorted list
+        list.innerHTML = '';
+        const sortedSubs = Array.from(state.knownSubreddits).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+        sortedSubs.forEach(sub => {
+            const checkbox = el('input', {
+                type: 'checkbox',
+                checked: !state.hiddenSubreddits.has(sub),
+                onChange: (e) => {
+                    if (e.target.checked) {
+                        state.hiddenSubreddits.delete(sub);
+                    } else {
+                        state.hiddenSubreddits.add(sub);
+                    }
+                    btnText.textContent = `Select Subreddits (${state.knownSubreddits.size - state.hiddenSubreddits.size} of ${state.knownSubreddits.size})`;
+                    if (resetBtn) resetBtn.classList.toggle('visible', state.hiddenSubreddits.size > 0);
+                    queueFilter(true);
+                }
+            });
+
+            // Make entire row clickable to toggle checkbox
+            const item = el('label', { className: 'tm-raf-sub-item' }, [
+                checkbox,
+                el('span', { textContent: sub })
+            ]);
+            list.appendChild(item);
+        });
+
+        // Re-apply search filter if there is active text
+        const searchInput = document.getElementById('tm-raf-sub-search-input');
+        if (searchInput && searchInput.value) {
+            const term = searchInput.value.toLowerCase();
+            Array.from(list.children).forEach(child => {
+                const text = child.textContent.toLowerCase();
+                child.style.display = text.includes(term) ? 'flex' : 'none';
+            });
+        }
+    }
+
     function updateUIState() {
         const statsEl = document.getElementById('tm-raf-stats-text');
         const resetBtn = document.getElementById('tm-raf-reset-btn');
@@ -827,11 +1001,11 @@
             });
         };
 
-        const createCheckbox = (id, labelText, stateKey) => {
+        const createCheckbox = (id, labelText, stateKey, customOnChange = null) => {
             return el('div', { className: 'tm-raf-checkbox-row' }, [
                 el('input', {
                     id: id, type: 'checkbox', checked: state[stateKey],
-                    onChange: (e) => { state[stateKey] = e.target.checked; queueFilter(true); }
+                    onChange: customOnChange || ((e) => { state[stateKey] = e.target.checked; queueFilter(true); })
                 }),
                 el('label', { htmlFor: id, textContent: labelText })
             ]);
@@ -874,7 +1048,73 @@
             dateSplitRow
         ]);
 
-        // --- 2. POST TYPE (Advanced) ---
+        // --- 2. POST TYPE & SUBREDDIT (Advanced) ---
+
+        // Subreddit Multi-Select Custom UI
+        const subSearchInput = el('input', {
+            id: 'tm-raf-sub-search-input',
+            type: 'search',
+            className: 'tm-raf-input',
+            placeholder: 'Search subreddits...',
+            style: 'width: 100%; box-sizing: border-box; border-radius: 0; border: none;',
+            onInput: (e) => {
+                const term = e.target.value.toLowerCase();
+                const list = document.getElementById('tm-raf-sub-list');
+                if (list) {
+                    Array.from(list.children).forEach(child => {
+                        const text = child.textContent.toLowerCase();
+                        child.style.display = text.includes(term) ? 'flex' : 'none';
+                    });
+                }
+            }
+        });
+
+        const subDropdownMenu = el('div', { id: 'tm-raf-sub-menu', className: 'tm-raf-dropdown-menu' }, [
+            el('div', { className: 'tm-raf-sub-search' }, [subSearchInput]),
+            el('div', { id: 'tm-raf-sub-list', className: 'tm-raf-sub-list' }) // Populated dynamically
+        ]);
+
+        const subDropdownBtn = el('div', { id: 'tm-raf-sub-btn', className: 'tm-raf-input tm-raf-dropdown-btn' }, [
+            el('span', { id: 'tm-raf-sub-btn-text', textContent: 'Scanning subreddits...' }),
+            el('span', { textContent: '▼', style: 'font-size: 0.6rem; opacity: 0.7;' })
+        ]);
+
+        subDropdownBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (state.knownSubreddits.size <= 1) return;
+            const menu = document.getElementById('tm-raf-sub-menu');
+            const btn = document.getElementById('tm-raf-sub-btn');
+            menu.classList.toggle('open');
+            btn.classList.toggle('open');
+            if (menu.classList.contains('open')) {
+                document.getElementById('tm-raf-sub-search-input').focus();
+            }
+        });
+
+        const subResetBtn = el('button', {
+            id: 'tm-raf-sub-reset-btn',
+            type: 'button',
+            className: 'tm-raf-sub-reset',
+            textContent: 'Reset',
+            onClick: (e) => {
+                e.stopPropagation();
+                state.hiddenSubreddits.clear();
+                updateSubredditDropdownUI();
+                queueFilter(true);
+            }
+        });
+
+        const subHeader = el('div', { className: 'tm-raf-sub-header' }, [
+            el('label', { className: 'tm-raf-label', textContent: 'Subreddit Filter' }),
+            subResetBtn
+        ]);
+
+        const subDropdownContainer = el('div', { id: 'tm-raf-sub-container', className: 'tm-raf-dropdown tm-raf-row' }, [
+            subHeader,
+            subDropdownBtn,
+            subDropdownMenu
+        ]);
+
         const typeSelect = el('select', {
             id: 'tm-raf-post-type', className: 'tm-raf-select',
             onChange: (e) => { state.postType = e.target.value; queueFilter(true); }
@@ -891,6 +1131,7 @@
         ]);
 
         const postTypeSection = el('div', { className: 'tm-raf-section' }, [
+            subDropdownContainer,
             typeSelectRow
         ]);
 
@@ -910,9 +1151,27 @@
             createCheckbox('tm-raf-highlight-archived-cb', 'Highlight Archived Posts', 'highlightArchived'),
             el('hr', { className: 'tm-raf-hr' }),
             el('div', { style: 'display: flex; flex-direction: column; gap: 0.15rem;' }, [
-                createCheckbox('tm-raf-hide-upvoted', 'Hide Upvoted Posts', 'hideUpvoted'),
+                createCheckbox('tm-raf-hide-upvoted', 'Hide Upvoted Posts', 'hideUpvoted', (e) => {
+                    state.hideUpvoted = e.target.checked;
+                    if (state.hideUpvoted) {
+                        state.showUpvoted = false;
+                        const otherCb = document.getElementById('tm-raf-show-upvoted');
+                        if (otherCb) otherCb.checked = false;
+                    }
+                    queueFilter(true);
+                }),
                 createCheckbox('tm-raf-hide-promoted', 'Hide Promoted Posts', 'hidePromoted')
-            ])
+            ]),
+            el('hr', { className: 'tm-raf-hr' }),
+            createCheckbox('tm-raf-show-upvoted', 'Show Upvoted Posts Only', 'showUpvoted', (e) => {
+                state.showUpvoted = e.target.checked;
+                if (state.showUpvoted) {
+                    state.hideUpvoted = false;
+                    const otherCb = document.getElementById('tm-raf-hide-upvoted');
+                    if (otherCb) otherCb.checked = false;
+                }
+                queueFilter(true);
+            })
         ]);
 
         // --- 4. INCLUSION / EXCLUSION (Show Only & Blocks) ---
