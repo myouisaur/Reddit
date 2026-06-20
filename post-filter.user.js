@@ -2,7 +2,7 @@
 // @name         [Reddit] Post Filter
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      4.0
+// @version      5.0
 // @description  Filters Reddit posts dynamically with customizable rules for scores, dates, subreddits, and keywords.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -31,6 +31,8 @@
 
     const CONFIG = {
         DEBOUNCE_MS: 200,
+        DEFAULT_MAX_SCORE: 10,
+        SCROLL_MARGIN: '400px',
         SELECTORS: {
             SIDEBAR: '.side',
             TARGET_PARENT: '.content[role="main"]',
@@ -39,14 +41,47 @@
             TIME_ELEMENT: 'time.live-timestamp',
             SCORE_ELEMENT: '.score.unvoted',
             UPVOTED_ARROW: '.arrow.upmod',
+            DOWNVOTED_ARROW: '.arrow.downmod',
             ARCHIVED_ARROW: '.arrow.archived',
             TITLE_ELEMENT: 'p.title a.title',
             FLAIR_ELEMENT: '.linkflairlabel',
             PROMOTED_LINK: '.promotedlink',
             SUBREDDIT_LINK: 'a.subreddit, .subreddit.hover',
-            SEARCH_BOX: '#search'
+            SEARCH_BOX: '#search',
+            ANNOUNCEMENT_TAG: '.stickied-tagline'
         },
-        STORAGE_KEY: 'tm_reddit_filter_session_v3'
+        IDS: {
+            SENTINEL: 'tm-raf-sentinel',
+            INDICATOR: 'tm-raf-indicator',
+            STATS: 'tm-raf-stats-text',
+            EMPTY_STATE: 'tm-raf-empty-state',
+            ADVANCED_CONTAINER: 'tm-raf-advanced-container',
+            MIN_INPUT: 'tm-raf-min-input',
+            MAX_INPUT: 'tm-raf-max-input',
+            MIN_RANGE: 'tm-raf-min-range',
+            MAX_RANGE: 'tm-raf-max-range',
+            TRACK_FILL: 'tm-raf-track-fill',
+            LOCK_ICON: 'tm-raf-lock-svg-wrapper',
+            SUB_LIST: 'tm-raf-sub-list',
+            SUB_BTN_TEXT: 'tm-raf-sub-btn-text',
+            SUB_BTN: 'tm-raf-sub-btn',
+            SUB_MASTER_CB: 'tm-raf-sub-master-cb',
+            SUB_SEARCH: 'tm-raf-sub-search-input',
+            SUB_MENU: 'tm-raf-sub-menu',
+            RESET_BTN: 'tm-raf-reset-btn',
+            POST_TYPE: 'tm-raf-post-type',
+            ARCHIVED_CB: 'tm-raf-highlight-archived-cb',
+            TEXT_INPUTS: [
+                'tm-raf-date-from', 'tm-raf-date-to', 'tm-raf-show-keywords',
+                'tm-raf-show-flairs', 'tm-raf-keywords', 'tm-raf-flairs', 'tm-raf-highlight'
+            ],
+            CB_INPUTS: [
+                'tm-raf-hide-upvoted', 'tm-raf-show-upvoted', 'tm-raf-hide-downvoted',
+                'tm-raf-show-downvoted', 'tm-raf-hide-promoted', 'tm-raf-hide-announcements'
+            ]
+        },
+        STORAGE_KEY: 'tm_reddit_filter_session_v3',
+        SVG_LOCK: '<path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h1.9c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z"/>'
     };
 
     // Centralized DOM references populated during bootstrap
@@ -59,11 +94,20 @@
     let state = {
         dateFrom: null,
         dateTo: null,
+
+        // Score state
         minScore: 0,
-        maxScore: null,
+        maxScore: 0,
+        highestObservedScore: CONFIG.DEFAULT_MAX_SCORE,
+        isMaxScoreLocked: false,
+        feedContext: null,
+
         hideUpvoted: false,
         showUpvoted: false,
+        hideDownvoted: false,
+        showDownvoted: false,
         hidePromoted: false,
+        hideAnnouncements: false,
         postType: 'all',
 
         showKeywords: '',
@@ -83,9 +127,10 @@
         postCache: new WeakMap(),
         io: null,
 
-        // Volatile state (not saved in sessionStorage)
+        // Volatile state
         hiddenSubreddits: new Set(),
-        knownSubreddits: new Set()
+        knownSubreddits: new Set(),
+        sortedSubreddits: [] // Cached array for performance
     };
 
     // ==========================================
@@ -142,13 +187,17 @@
 
     function isFilterActive() {
         return state.minScore > 0 ||
-               state.maxScore !== null || state.dateFrom !== null ||
-               state.dateTo !== null || state.hideUpvoted || state.showUpvoted || state.hidePromoted ||
+               state.isMaxScoreLocked ||
+               state.dateFrom !== null ||
+               state.dateTo !== null || state.hideUpvoted || state.showUpvoted ||
+               state.hideDownvoted || state.showDownvoted ||
+               state.hidePromoted || state.hideAnnouncements ||
                state.showKeywords.trim() !== '' ||
                state.showFlairs.trim() !== '' ||
                state.keywords.trim() !== '' ||
                state.flairs.trim() !== '' ||
-               state.postType !== 'all' || state.highlightThreshold !== null ||
+               state.postType !== 'all' ||
+               state.highlightThreshold !== null ||
                state.hiddenSubreddits.size > 0;
     }
 
@@ -169,6 +218,16 @@
             .map(s => new RegExp(`\\b${escapeRegExp(s)}\\b`, 'i'));
     }
 
+    function getFeedContext() {
+        const url = new URL(window.location.href);
+        // Remove pagination parameters so infinite scroll/next page doesn't reset the context
+        url.searchParams.delete('count');
+        url.searchParams.delete('after');
+        url.searchParams.delete('before');
+        url.searchParams.delete('page');
+        return url.pathname.toLowerCase() + url.search;
+    }
+
     // ==========================================
     // STORAGE MANAGEMENT
     // ==========================================
@@ -180,11 +239,24 @@
                 const parsed = JSON.parse(saved);
                 state.dateFrom = parsed.dateFrom ?? null;
                 state.dateTo = parsed.dateTo ?? null;
-                state.minScore = parsed.minScore ?? 0;
-                state.maxScore = parsed.maxScore ?? null;
+
+                const currentContext = getFeedContext();
+                const isSameContext = (parsed.feedContext === currentContext);
+
+                // Only retain score thresholds if we are on the exact same feed context
+                state.minScore = isSameContext ? (parsed.minScore ?? 0) : 0;
+                state.isMaxScoreLocked = isSameContext ? (parsed.isMaxScoreLocked ?? false) : false;
+                state.maxScore = state.isMaxScoreLocked ? (parsed.maxScore ?? 0) : 0;
+
+                state.highestObservedScore = CONFIG.DEFAULT_MAX_SCORE;
+                state.feedContext = currentContext;
+
                 state.hideUpvoted = parsed.hideUpvoted ?? false;
                 state.showUpvoted = parsed.showUpvoted ?? false;
+                state.hideDownvoted = parsed.hideDownvoted ?? false;
+                state.showDownvoted = parsed.showDownvoted ?? false;
                 state.hidePromoted = parsed.hidePromoted ?? false;
+                state.hideAnnouncements = parsed.hideAnnouncements ?? false;
                 state.postType = parsed.postType ?? 'all';
                 state.showKeywords = parsed.showKeywords ?? '';
                 state.showFlairs = parsed.showFlairs ?? '';
@@ -204,11 +276,18 @@
             const stateToSave = {
                 dateFrom: state.dateFrom,
                 dateTo: state.dateTo,
+
                 minScore: state.minScore,
-                maxScore: state.maxScore,
+                maxScore: state.isMaxScoreLocked ? state.maxScore : null,
+                isMaxScoreLocked: state.isMaxScoreLocked,
+                feedContext: getFeedContext(),
+
                 hideUpvoted: state.hideUpvoted,
                 showUpvoted: state.showUpvoted,
+                hideDownvoted: state.hideDownvoted,
+                showDownvoted: state.showDownvoted,
                 hidePromoted: state.hidePromoted,
+                hideAnnouncements: state.hideAnnouncements,
                 postType: state.postType,
                 showKeywords: state.showKeywords,
                 showFlairs: state.showFlairs,
@@ -242,15 +321,15 @@
 
             const flairEl = postEl.querySelector(CONFIG.SELECTORS.FLAIR_ELEMENT);
             const flairText = flairEl ? flairEl.textContent.toLowerCase() : '';
-
             const subEl = postEl.querySelector(CONFIG.SELECTORS.SUBREDDIT_LINK);
             const subreddit = subEl ? subEl.textContent.trim().replace(/^r\//i, '') : null;
 
             const isPromoted = postEl.classList.contains('promotedlink') || postEl.dataset.promoted === 'true';
+            const isAnnouncement = postEl.querySelector(CONFIG.SELECTORS.ANNOUNCEMENT_TAG) !== null;
             const isTextPost = postEl.classList.contains('self');
             const isArchived = postEl.querySelector(CONFIG.SELECTORS.ARCHIVED_ARROW) !== null;
 
-            cached = { timestamp, titleText, flairText, subreddit, isPromoted, isTextPost, isArchived };
+            cached = { timestamp, titleText, flairText, subreddit, isPromoted, isAnnouncement, isTextPost, isArchived };
             state.postCache.set(postEl, cached);
         }
 
@@ -261,7 +340,8 @@
         }
 
         const isUpvoted = postEl.querySelector(CONFIG.SELECTORS.UPVOTED_ARROW) !== null;
-        return { ...cached, score, isUpvoted };
+        const isDownvoted = postEl.querySelector(CONFIG.SELECTORS.DOWNVOTED_ARROW) !== null;
+        return { ...cached, score, isUpvoted, isDownvoted };
     }
 
     function checkPostVisibility(postEl, activeKeywordRegexes, activeFlairs, activeShowKeywordRegexes, activeShowFlairs) {
@@ -276,19 +356,33 @@
         }
 
         if (isVisible && state.hidePromoted && data.isPromoted) isVisible = false;
+        if (isVisible && state.hideAnnouncements && data.isAnnouncement) isVisible = false;
 
         if (isVisible && state.postType !== 'all') {
             if (state.postType === 'text' && !data.isTextPost) isVisible = false;
             if (state.postType === 'link' && data.isTextPost) isVisible = false;
         }
 
-        const validMax = (state.maxScore !== null && state.maxScore >= state.minScore) ? state.maxScore : null;
+        const validMax = state.isMaxScoreLocked ? state.maxScore : null;
         if (isVisible && state.minScore > 0 && data.score < state.minScore) isVisible = false;
         if (isVisible && validMax !== null && data.score > validMax) isVisible = false;
 
-        // Upvoted State Filters
+        // --- Upvoted / Downvoted State Filters ---
+
+        // Exclusion (Hide) logic acts as independent "AND" statements
         if (isVisible && state.hideUpvoted && data.isUpvoted) isVisible = false;
-        if (isVisible && state.showUpvoted && !data.isUpvoted) isVisible = false;
+        if (isVisible && state.hideDownvoted && data.isDownvoted) isVisible = false;
+
+        // Inclusion (Show) logic acts as a grouped "OR" statement bucket
+        if (isVisible && (state.showUpvoted || state.showDownvoted)) {
+            const matchesShowUp = state.showUpvoted && data.isUpvoted;
+            const matchesShowDown = state.showDownvoted && data.isDownvoted;
+
+            // If the user has active inclusion filters, but this post matches neither of them, hide it
+            if (!matchesShowUp && !matchesShowDown) {
+                isVisible = false;
+            }
+        }
 
         if (isVisible && data.timestamp) {
             if (state.dateFrom && data.timestamp < state.dateFrom) isVisible = false;
@@ -347,7 +441,7 @@
             isHighlightedArchived = true;
         }
 
-        return { isVisible, isHighlighted, isHighlightedArchived, subreddit: data.subreddit };
+        return { isVisible, isHighlighted, isHighlightedArchived, subreddit: data.subreddit, score: data.score };
     }
 
     function executeFilter() {
@@ -368,6 +462,7 @@
             let newlyProcessed = 0;
             let newlyVisible = 0;
             let discoveredNewSubreddits = false;
+            let currentParseHighest = state.highestObservedScore;
 
             if (state.needsFullReeval) {
                 state.totalPosts = 0;
@@ -375,12 +470,18 @@
             }
 
             postsToProcess.forEach(post => {
-                const { isVisible, isHighlighted, isHighlightedArchived, subreddit } = checkPostVisibility(
+                const { isVisible, isHighlighted, isHighlightedArchived, subreddit, score } = checkPostVisibility(
                     post, activeKeywordRegexes, activeFlairs, activeShowKeywordRegexes, activeShowFlairs
                 );
 
+                if (score > currentParseHighest) {
+                    currentParseHighest = score;
+                }
+
                 if (subreddit && !state.knownSubreddits.has(subreddit)) {
                     state.knownSubreddits.add(subreddit);
+                    state.sortedSubreddits.push(subreddit);
+                    state.sortedSubreddits.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
                     discoveredNewSubreddits = true;
                 }
 
@@ -398,6 +499,15 @@
             if (!state.needsFullReeval) {
                 state.totalPosts += newlyProcessed;
                 state.visiblePosts += newlyVisible;
+            }
+
+            // Sync dynamic highest score
+            if (currentParseHighest > state.highestObservedScore) {
+                state.highestObservedScore = currentParseHighest;
+                if (!state.isMaxScoreLocked) {
+                    state.maxScore = currentParseHighest;
+                }
+                syncScoreUI();
             }
 
             // Phase 2: Write mutations
@@ -421,6 +531,7 @@
 
             saveState();
             updateUIState();
+
             setTimeout(() => { state.isMutating = false; }, 0);
         });
     }
@@ -431,31 +542,83 @@
         state.debounceTimer = setTimeout(executeFilter, CONFIG.DEBOUNCE_MS);
     }
 
+    function syncScoreUI() {
+        const trackMax = Math.max(CONFIG.DEFAULT_MAX_SCORE, state.highestObservedScore, state.isMaxScoreLocked ? state.maxScore : 0);
+        const currentMax = state.isMaxScoreLocked ? state.maxScore : state.highestObservedScore;
+
+        const inputMin = document.getElementById(CONFIG.IDS.MIN_INPUT);
+        const inputMax = document.getElementById(CONFIG.IDS.MAX_INPUT);
+        const rangeMin = document.getElementById(CONFIG.IDS.MIN_RANGE);
+        const rangeMax = document.getElementById(CONFIG.IDS.MAX_RANGE);
+        const fill = document.getElementById(CONFIG.IDS.TRACK_FILL);
+        const lockIconWrapper = document.getElementById(CONFIG.IDS.LOCK_ICON);
+
+        if (inputMin && document.activeElement !== inputMin) inputMin.value = state.minScore;
+        if (inputMax && document.activeElement !== inputMax) inputMax.value = currentMax;
+
+        if (rangeMin && rangeMax) {
+            rangeMin.max = trackMax;
+            rangeMax.max = trackMax;
+            rangeMin.value = state.minScore;
+            rangeMax.value = currentMax;
+
+            // Fix overlapping un-clickable thumb issue by adjusting z-index dynamically
+            if (state.minScore > (trackMax / 2)) {
+                rangeMin.style.zIndex = '3';
+                rangeMax.style.zIndex = '2';
+            } else {
+                rangeMin.style.zIndex = '2';
+                rangeMax.style.zIndex = '3';
+            }
+        }
+
+        if (fill) {
+            const minPct = (state.minScore / trackMax) * 100;
+            const maxPct = (currentMax / trackMax) * 100;
+            fill.style.left = `${minPct}%`;
+            fill.style.width = `${Math.max(0, maxPct - minPct)}%`;
+        }
+
+        if (lockIconWrapper) {
+            if (state.isMaxScoreLocked) {
+                lockIconWrapper.style.display = 'flex';
+                lockIconWrapper.innerHTML = `<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor">${CONFIG.SVG_LOCK}</svg>`;
+            } else {
+                lockIconWrapper.style.display = 'none';
+                lockIconWrapper.innerHTML = '';
+            }
+        }
+    }
+
     function resetFilters() {
-        ['tm-raf-min-score', 'tm-raf-max-score', 'tm-raf-date-from', 'tm-raf-date-to',
-         'tm-raf-show-keywords', 'tm-raf-show-flairs', 'tm-raf-keywords', 'tm-raf-flairs', 'tm-raf-highlight'].forEach(id => {
+        CONFIG.IDS.TEXT_INPUTS.forEach(id => {
             const el = document.getElementById(id);
             if (el) el.value = '';
         });
 
-        ['tm-raf-hide-upvoted', 'tm-raf-show-upvoted', 'tm-raf-hide-promoted'].forEach(id => {
+        CONFIG.IDS.CB_INPUTS.forEach(id => {
             const el = document.getElementById(id);
             if (el) el.checked = false;
         });
 
-        const cbArchived = document.getElementById('tm-raf-highlight-archived-cb');
+        const cbArchived = document.getElementById(CONFIG.IDS.ARCHIVED_CB);
         if (cbArchived) cbArchived.checked = true;
 
-        const typeSelect = document.getElementById('tm-raf-post-type');
+        const typeSelect = document.getElementById(CONFIG.IDS.POST_TYPE);
         if (typeSelect) typeSelect.value = 'all';
 
         state.minScore = 0;
-        state.maxScore = null;
+        state.isMaxScoreLocked = false;
+        state.maxScore = state.highestObservedScore;
+
         state.dateFrom = null;
         state.dateTo = null;
         state.hideUpvoted = false;
         state.showUpvoted = false;
+        state.hideDownvoted = false;
+        state.showDownvoted = false;
         state.hidePromoted = false;
+        state.hideAnnouncements = false;
         state.postType = 'all';
         state.showKeywords = '';
         state.showFlairs = '';
@@ -466,24 +629,8 @@
         state.hiddenSubreddits.clear();
 
         updateSubredditDropdownUI();
-        validateMinMax();
+        syncScoreUI();
         queueFilter(true);
-    }
-
-    function validateMinMax() {
-        const inputMin = document.getElementById('tm-raf-min-score');
-        const inputMax = document.getElementById('tm-raf-max-score');
-        if (!inputMin || !inputMax) return;
-
-        if (state.maxScore !== null && state.minScore > state.maxScore) {
-            inputMin.classList.add('tm-raf-input-error');
-            inputMax.classList.add('tm-raf-input-error');
-            inputMax.setAttribute('title', 'Max must be greater than Min');
-        } else {
-            inputMin.classList.remove('tm-raf-input-error');
-            inputMax.classList.remove('tm-raf-input-error');
-            inputMax.removeAttribute('title');
-        }
     }
 
     // ==========================================
@@ -507,7 +654,7 @@
                 }
             }
 
-            if (!document.getElementById('tm-raf-sentinel')) {
+            if (!document.getElementById(CONFIG.IDS.SENTINEL)) {
                 sentinelMissing = true;
             }
 
@@ -530,17 +677,17 @@
     function setupInfiniteScrollSentinel() {
         if (state.io) state.io.disconnect();
 
-        const existing = document.getElementById('tm-raf-sentinel');
+        const existing = document.getElementById(CONFIG.IDS.SENTINEL);
         if (existing) existing.remove();
 
-        const sentinel = el('div', { id: 'tm-raf-sentinel', style: 'height: 1px; width: 100%; clear: left;' });
+        const sentinel = el('div', { id: CONFIG.IDS.SENTINEL, style: 'height: 1px; width: 100%; clear: left;' });
         DOM.siteTable.appendChild(sentinel);
 
         state.io = new IntersectionObserver(entries => {
             if (entries[0].isIntersecting && state.visiblePosts < state.totalPosts) {
                 window.dispatchEvent(new CustomEvent('scroll'));
             }
-        }, { rootMargin: '400px' });
+        }, { rootMargin: CONFIG.SCROLL_MARGIN });
 
         state.io.observe(sentinel);
     }
@@ -549,7 +696,7 @@
         document.addEventListener('keydown', (e) => {
             if (e.altKey && e.key.toLowerCase() === 'f') {
                 e.preventDefault();
-                const minInput = document.getElementById('tm-raf-min-score');
+                const minInput = document.getElementById(CONFIG.IDS.MIN_INPUT);
                 if (minInput) minInput.focus();
             }
         });
@@ -563,6 +710,14 @@
         if (document.getElementById('tm-raf-styles')) return;
 
         const css = `
+            :root {
+                --tm-raf-highlight-color: rgba(255, 215, 0, 0.8);
+                --tm-raf-highlight-bg: rgba(255, 215, 0, 0.1);
+                --tm-raf-archived-color: #ff4a08;
+                --tm-raf-archived-bg: rgba(255, 74, 8, 0.20);
+                --tm-raf-active-color: #28a745;
+            }
+
             /* Bulletproof Hiding */
             .tm-raf-hidden,
             .tm-raf-hidden + .child,
@@ -573,16 +728,16 @@
 
             /* Highlighting */
             .tm-raf-highlight {
-                border-left: 4px solid rgba(255, 215, 0, 0.8) !important;
-                background-color: rgba(255, 215, 0, 0.1) !important;
+                border-left: 4px solid var(--tm-raf-highlight-color) !important;
+                background-color: var(--tm-raf-highlight-bg) !important;
                 border-radius: 3px;
                 padding-left: 8px !important;
             }
 
             /* Archived Highlighting */
             .tm-raf-highlight-archived {
-                border-left: 4px solid #ff4a08 !important;
-                background-color: rgba(255, 74, 8, 0.20) !important;
+                border-left: 4px solid var(--tm-raf-archived-color) !important;
+                background-color: var(--tm-raf-archived-bg) !important;
                 border-radius: 3px;
                 padding-left: 8px !important;
             }
@@ -612,6 +767,109 @@
                 gap: 0.25rem;
             }
 
+            /* Subreddit Native Dual Slider Styling */
+            .tm-raf-score-container {
+                display: flex;
+                flex-direction: column;
+                gap: 0.25rem;
+                margin-bottom: 0.75rem;
+            }
+            .tm-raf-score-labels {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 0;
+            }
+            .tm-raf-slider-row {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .tm-raf-score-input {
+                width: 48px;
+                background-color: transparent;
+                color: inherit;
+                border: 1px solid currentColor;
+                opacity: 0.5;
+                border-radius: 3px;
+                padding: 4px;
+                text-align: center;
+                font-size: 0.8rem;
+                font-family: inherit;
+                -moz-appearance: textfield;
+                transition: opacity 0.2s;
+            }
+            .tm-raf-score-input::-webkit-outer-spin-button,
+            .tm-raf-score-input::-webkit-inner-spin-button {
+                -webkit-appearance: none;
+                margin: 0;
+            }
+            .tm-raf-score-input:focus {
+                opacity: 1;
+                outline: none;
+            }
+            .tm-raf-range-wrapper {
+                position: relative;
+                flex: 1;
+                height: 20px;
+                display: flex;
+                align-items: center;
+                color: inherit;
+                cursor: pointer;
+            }
+            .tm-raf-track-bg {
+                position: absolute;
+                width: 100%;
+                height: 4px;
+                background-color: currentColor;
+                opacity: 0.3;
+                border-radius: 2px;
+                top: 50%;
+                transform: translateY(-50%);
+                pointer-events: none;
+            }
+            .tm-raf-track-fill {
+                position: absolute;
+                height: 4px;
+                background-color: currentColor;
+                opacity: 0.85;
+                border-radius: 2px;
+                top: 50%;
+                transform: translateY(-50%);
+                pointer-events: none;
+            }
+            .tm-raf-range-input {
+                position: absolute;
+                width: 100%;
+                -webkit-appearance: none;
+                background: transparent;
+                pointer-events: none;
+                margin: 0;
+                top: 50%;
+                transform: translateY(-50%);
+                color: inherit;
+            }
+            .tm-raf-range-input::-webkit-slider-thumb {
+                pointer-events: auto;
+                -webkit-appearance: none;
+                height: 14px;
+                width: 14px;
+                border-radius: 50%;
+                background-color: currentColor;
+                cursor: pointer;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
+            }
+            .tm-raf-range-input::-moz-range-thumb {
+                pointer-events: auto;
+                height: 14px;
+                width: 14px;
+                border-radius: 50%;
+                background-color: currentColor;
+                cursor: pointer;
+                border: none;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
+            }
+
             /* Subreddit Multi-Select Inline Accordion */
             .tm-raf-dropdown {
                 position: relative;
@@ -622,25 +880,6 @@
                 justify-content: space-between;
                 align-items: center;
                 margin-bottom: 0.25rem;
-            }
-            .tm-raf-sub-reset {
-                background: transparent;
-                border: none;
-                color: #d22;
-                font-size: 0.65rem;
-                cursor: pointer;
-                padding: 0;
-                font-weight: bold;
-                opacity: 0;
-                pointer-events: none;
-                transition: opacity 0.2s ease;
-            }
-            .tm-raf-sub-reset.visible {
-                opacity: 1;
-                pointer-events: auto;
-            }
-            .tm-raf-sub-reset:hover {
-                text-decoration: underline;
             }
             .tm-raf-dropdown-btn {
                 cursor: pointer;
@@ -670,18 +909,22 @@
                 border-bottom-left-radius: 0.2rem;
                 border-bottom-right-radius: 0.2rem;
                 box-sizing: border-box;
-                background-color: transparent; /* Inherits naturally */
+                background-color: transparent;
                 color: inherit;
             }
             .tm-raf-dropdown-menu.open {
                 display: block;
             }
             .tm-raf-sub-search {
-                padding: 4px;
-                border-bottom: 1px dashed rgba(128, 128, 128, 0.3);
+                padding: 6px 8px;
+                border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                background-color: rgba(128, 128, 128, 0.05);
             }
             .tm-raf-sub-list {
-                max-height: 200px;
+                max-height: 40vh;
                 overflow-y: auto;
             }
             .tm-raf-sub-item {
@@ -704,8 +947,10 @@
                 text-align: center;
                 color: rgba(128, 128, 128, 0.8);
                 font-size: 0.75rem;
-                margin: 1rem 0 0.5rem 0;
+                margin: 0 0 0.25rem 0;
                 white-space: nowrap;
+                text-transform: uppercase !important;
+                letter-spacing: 0.5px;
             }
             .tm-raf-inline-divider::before,
             .tm-raf-inline-divider::after {
@@ -718,14 +963,20 @@
 
             .tm-raf-hr {
                 border: none;
-                border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+                border-bottom: 1px dashed rgba(128, 128, 128, 0.3);
                 margin: 0.35rem 0;
             }
 
-            /* Composite Input Group */
+            /* Input Groups & Grids */
             .tm-raf-input-group {
                 display: flex;
                 align-items: stretch;
+                width: 100%;
+            }
+            .tm-raf-grid-group {
+                display: grid;
+                grid-template-columns: max-content 1fr;
+                row-gap: 0.25rem;
                 width: 100%;
             }
             .tm-raf-input-prefix {
@@ -742,16 +993,14 @@
                 white-space: nowrap;
                 box-sizing: border-box;
             }
-            .tm-raf-input-group .tm-raf-input {
+            .tm-raf-input-group .tm-raf-input,
+            .tm-raf-grid-group .tm-raf-input {
                 border-top-left-radius: 0;
                 border-bottom-left-radius: 0;
                 flex: 1;
             }
 
             /* Search input clearing webkit tweaks */
-            .tm-raf-input[type="search"] {
-                -webkit-appearance: textfield;
-            }
             .tm-raf-input[type="search"]::-webkit-search-cancel-button {
                 -webkit-appearance: searchfield-cancel-button;
                 cursor: pointer;
@@ -782,10 +1031,6 @@
                 box-shadow: 0 0 0 2px rgba(128, 128, 128, 0.2);
             }
 
-            .tm-raf-input-error {
-                border-color: #d22 !important;
-                background-color: rgba(221, 34, 34, 0.1) !important;
-            }
             .tm-raf-checkbox-row {
                 display: flex;
                 align-items: center;
@@ -803,7 +1048,7 @@
                 width: 8px;
                 height: 8px;
                 border-radius: 50%;
-                background-color: #28a745;
+                background-color: var(--tm-raf-active-color);
                 opacity: 0;
                 transition: opacity 0.2s ease;
             }
@@ -898,17 +1143,36 @@
         document.head.appendChild(el('style', { id: 'tm-raf-styles', textContent: css }));
     }
 
+    function updateMasterCheckboxState() {
+        const masterCb = document.getElementById(CONFIG.IDS.SUB_MASTER_CB);
+        if (!masterCb) return;
+
+        if (state.knownSubreddits.size <= 1) {
+            masterCb.disabled = true;
+            return;
+        }
+
+        masterCb.disabled = false;
+        if (state.hiddenSubreddits.size === 0) {
+            masterCb.checked = true;
+            masterCb.indeterminate = false;
+        } else if (state.hiddenSubreddits.size === state.knownSubreddits.size) {
+            masterCb.checked = false;
+            masterCb.indeterminate = false;
+        } else {
+            masterCb.checked = false;
+            masterCb.indeterminate = true;
+        }
+    }
+
     function updateSubredditDropdownUI() {
-        const list = document.getElementById('tm-raf-sub-list');
-        const btnText = document.getElementById('tm-raf-sub-btn-text');
-        const subBtn = document.getElementById('tm-raf-sub-btn');
-        const resetBtn = document.getElementById('tm-raf-sub-reset-btn');
+        const list = document.getElementById(CONFIG.IDS.SUB_LIST);
+        const btnText = document.getElementById(CONFIG.IDS.SUB_BTN_TEXT);
+        const subBtn = document.getElementById(CONFIG.IDS.SUB_BTN);
 
         if (!list || !btnText || !subBtn) return;
 
-        if (resetBtn) {
-            resetBtn.classList.toggle('visible', state.hiddenSubreddits.size > 0);
-        }
+        updateMasterCheckboxState();
 
         if (state.knownSubreddits.size <= 1) {
             btnText.textContent = 'No subreddits to filter';
@@ -921,36 +1185,34 @@
         subBtn.style.opacity = '1';
         btnText.textContent = `Select Subreddits (${state.knownSubreddits.size - state.hiddenSubreddits.size} of ${state.knownSubreddits.size})`;
 
-        // Re-render the sorted list
-        list.innerHTML = '';
-        const sortedSubs = Array.from(state.knownSubreddits).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+        if (list.innerHTML === '') {
+            // Render the pre-sorted list directly for performance
+            state.sortedSubreddits.forEach(sub => {
+                const checkbox = el('input', {
+                    type: 'checkbox',
+                    checked: !state.hiddenSubreddits.has(sub),
+                    onChange: (e) => {
+                        if (e.target.checked) {
+                            state.hiddenSubreddits.delete(sub);
+                        } else {
+                            state.hiddenSubreddits.add(sub);
+                        }
+                        btnText.textContent = `Select Subreddits (${state.knownSubreddits.size - state.hiddenSubreddits.size} of ${state.knownSubreddits.size})`;
 
-        sortedSubs.forEach(sub => {
-            const checkbox = el('input', {
-                type: 'checkbox',
-                checked: !state.hiddenSubreddits.has(sub),
-                onChange: (e) => {
-                    if (e.target.checked) {
-                        state.hiddenSubreddits.delete(sub);
-                    } else {
-                        state.hiddenSubreddits.add(sub);
+                        updateMasterCheckboxState();
+                        queueFilter(true);
                     }
-                    btnText.textContent = `Select Subreddits (${state.knownSubreddits.size - state.hiddenSubreddits.size} of ${state.knownSubreddits.size})`;
-                    if (resetBtn) resetBtn.classList.toggle('visible', state.hiddenSubreddits.size > 0);
-                    queueFilter(true);
-                }
+                });
+
+                const item = el('label', { className: 'tm-raf-sub-item' }, [
+                    checkbox,
+                    el('span', { textContent: sub })
+                ]);
+                list.appendChild(item);
             });
+        }
 
-            // Make entire row clickable to toggle checkbox
-            const item = el('label', { className: 'tm-raf-sub-item' }, [
-                checkbox,
-                el('span', { textContent: sub })
-            ]);
-            list.appendChild(item);
-        });
-
-        // Re-apply search filter if there is active text
-        const searchInput = document.getElementById('tm-raf-sub-search-input');
+        const searchInput = document.getElementById(CONFIG.IDS.SUB_SEARCH);
         if (searchInput && searchInput.value) {
             const term = searchInput.value.toLowerCase();
             Array.from(list.children).forEach(child => {
@@ -961,13 +1223,13 @@
     }
 
     function updateUIState() {
-        const statsEl = document.getElementById('tm-raf-stats-text');
-        const resetBtn = document.getElementById('tm-raf-reset-btn');
-        const indicator = document.getElementById('tm-raf-indicator');
-        const emptyState = document.getElementById('tm-raf-empty-state');
+        const statsEl = document.getElementById(CONFIG.IDS.STATS);
+        const resetBtn = document.getElementById(CONFIG.IDS.RESET_BTN);
+        const indicator = document.getElementById(CONFIG.IDS.INDICATOR);
+        const emptyState = document.getElementById(CONFIG.IDS.EMPTY_STATE);
 
         if (statsEl) {
-            statsEl.textContent = `Showing ${state.visiblePosts} of ${state.totalPosts} posts.`;
+            statsEl.textContent = `Showing ${state.visiblePosts} of ${state.totalPosts} posts`;
         }
 
         const active = isFilterActive();
@@ -995,7 +1257,6 @@
                 onInput: (e) => {
                     const parsed = parser(e.target.value);
                     state[stateKey] = parsed;
-                    if(id.includes('score')) validateMinMax();
                     queueFilter(true);
                 }
             });
@@ -1011,20 +1272,114 @@
             ]);
         };
 
-        const createInlineDivider = (text) => {
-            return el('div', { className: 'tm-raf-inline-divider', textContent: text });
+        const createExclusiveCheckbox = (id, labelText, stateKey, oppStateKey, oppId) => {
+            return createCheckbox(id, labelText, stateKey, (e) => {
+                state[stateKey] = e.target.checked;
+                if (state[stateKey] && oppStateKey && oppId) {
+                    state[oppStateKey] = false;
+                    const oppCb = document.getElementById(oppId);
+                    if (oppCb) oppCb.checked = false;
+                }
+                queueFilter(true);
+            });
+        };
+
+        const createInlineDivider = (text, customStyle = '') => {
+            return el('div', { className: 'tm-raf-inline-divider', style: customStyle, textContent: text });
         };
 
         // --- 1. FILTERS (Basic) ---
-        const inputMinScore = createInput('tm-raf-min-score', 'number', 'e.g. 10', state.minScore || '', 'minScore', v => parseInt(v, 10) || 0);
-        const inputMaxScore = createInput('tm-raf-max-score', 'number', 'e.g. 1000', state.maxScore, 'maxScore', v => v.trim() === '' ? null : (parseInt(v, 10) || 0));
 
-        inputMinScore.setAttribute('min', '0');
-        inputMaxScore.setAttribute('min', '0');
+        const onMinChange = (e) => {
+            let val = parseInt(e.target.value, 10) || 0;
+            const currentMax = state.isMaxScoreLocked ? state.maxScore : state.highestObservedScore;
+            val = Math.min(val, currentMax);
+            state.minScore = Math.max(0, val);
+            syncScoreUI();
+            queueFilter(true);
+        };
 
-        const scoreSplitRow = el('div', { className: 'tm-raf-split-row' }, [
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-min-score', textContent: 'Minimum Score' }), inputMinScore ]),
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-max-score', textContent: 'Maximum Score' }), inputMaxScore ])
+        const onMaxChange = (e) => {
+            let val = parseInt(e.target.value, 10) || 0;
+            val = Math.max(val, state.minScore);
+            state.maxScore = val;
+            state.isMaxScoreLocked = true;
+            syncScoreUI();
+            queueFilter(true);
+        };
+
+        const inputMinScore = el('input', { id: CONFIG.IDS.MIN_INPUT, type: 'number', className: 'tm-raf-score-input', min: 0, value: state.minScore, onInput: onMinChange });
+        const inputMaxScore = el('input', { id: CONFIG.IDS.MAX_INPUT, type: 'number', className: 'tm-raf-score-input', min: 0, value: state.maxScore, onInput: onMaxChange });
+        const rangeMin = el('input', { id: CONFIG.IDS.MIN_RANGE, type: 'range', className: 'tm-raf-range-input', min: 0, onInput: onMinChange });
+        const rangeMax = el('input', { id: CONFIG.IDS.MAX_RANGE, type: 'range', className: 'tm-raf-range-input', min: 0, onInput: onMaxChange });
+
+        const rangeWrapper = el('div', { className: 'tm-raf-range-wrapper' }, [
+            el('div', { className: 'tm-raf-track-bg' }),
+            el('div', { id: CONFIG.IDS.TRACK_FILL, className: 'tm-raf-track-fill' }),
+            rangeMin,
+            rangeMax
+        ]);
+
+        rangeWrapper.addEventListener('click', (e) => {
+            if (e.target.tagName.toLowerCase() === 'input') return;
+
+            const rect = rangeWrapper.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const pct = Math.max(0, Math.min(1, clickX / rect.width));
+
+            const trackMax = Math.max(CONFIG.DEFAULT_MAX_SCORE, state.highestObservedScore, state.isMaxScoreLocked ? state.maxScore : 0);
+            const currentMax = state.isMaxScoreLocked ? state.maxScore : state.highestObservedScore;
+            const clickedVal = Math.round(pct * trackMax);
+
+            if (clickedVal < state.minScore) {
+                state.minScore = clickedVal;
+            } else if (clickedVal > currentMax) {
+                state.maxScore = clickedVal;
+                state.isMaxScoreLocked = true;
+            } else {
+                const distMin = Math.abs(clickedVal - state.minScore);
+                const distMax = Math.abs(clickedVal - currentMax);
+
+                if (distMin <= distMax) {
+                    state.minScore = clickedVal;
+                } else {
+                    state.maxScore = clickedVal;
+                    state.isMaxScoreLocked = true;
+                }
+            }
+
+            syncScoreUI();
+            queueFilter(true);
+        });
+
+        const lockIconWrapper = el('span', {
+            id: CONFIG.IDS.LOCK_ICON,
+            style: 'display: none; cursor: pointer; align-items: center;',
+            title: 'Click to unlock Max Score',
+            onClick: () => {
+                state.isMaxScoreLocked = false;
+                state.maxScore = state.highestObservedScore;
+                syncScoreUI();
+                queueFilter(true);
+            }
+        });
+
+        const maxLabelContainer = el('div', { style: 'display: flex; align-items: center; gap: 2px;' }, [
+            lockIconWrapper,
+            el('label', { className: 'tm-raf-label', style: 'margin: 0;', textContent: 'MAX' })
+        ]);
+
+        const scoreContainer = el('div', { className: 'tm-raf-score-container' }, [
+            createInlineDivider('Score'),
+            el('div', { className: 'tm-raf-score-labels' }, [
+                el('label', { className: 'tm-raf-label', style: 'margin: 0;', textContent: 'MIN' }),
+                maxLabelContainer
+            ]),
+            el('div', { className: 'tm-raf-slider-row' }, [
+                inputMinScore,
+                rangeWrapper,
+                inputMaxScore
+            ])
         ]);
 
         const inputDateFrom = el('input', {
@@ -1038,28 +1393,31 @@
             onChange: (e) => { state.dateTo = parseInputDateToLocal(e.target.value, true); queueFilter(true); }
         });
 
-        const dateSplitRow = el('div', { className: 'tm-raf-split-row', style: 'margin-bottom: 0;' }, [
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-date-from', textContent: 'Date From' }), inputDateFrom ]),
-            el('div', { className: 'tm-raf-split-col' }, [ el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-date-to', textContent: 'Date To' }), inputDateTo ])
+        const dateRangeSection = el('div', { className: 'tm-raf-row', style: 'margin-bottom: 0;' }, [
+            createInlineDivider('Date Range'),
+            el('div', { className: 'tm-raf-grid-group' }, [
+                el('span', { className: 'tm-raf-input-prefix', textContent: 'From' }),
+                inputDateFrom,
+                el('span', { className: 'tm-raf-input-prefix', textContent: 'To' }),
+                inputDateTo
+            ])
         ]);
 
         const filtersSection = el('div', { className: 'tm-raf-section', style: 'border-bottom: 1px dashed rgba(128,128,128,0.3);' }, [
-            scoreSplitRow,
-            dateSplitRow
+            scoreContainer,
+            dateRangeSection
         ]);
 
         // --- 2. POST TYPE & SUBREDDIT (Advanced) ---
 
-        // Subreddit Multi-Select Custom UI
         const subSearchInput = el('input', {
-            id: 'tm-raf-sub-search-input',
-            type: 'search',
-            className: 'tm-raf-input',
+            id: CONFIG.IDS.SUB_SEARCH,
+            type: 'text',
             placeholder: 'Search subreddits...',
-            style: 'width: 100%; box-sizing: border-box; border-radius: 0; border: none;',
+            style: 'flex: 1; box-sizing: border-box; border: none; background: transparent; outline: none; color: inherit; font-family: inherit; font-size: 0.8rem; padding: 2px 0; min-width: 0;',
             onInput: (e) => {
                 const term = e.target.value.toLowerCase();
-                const list = document.getElementById('tm-raf-sub-list');
+                const list = document.getElementById(CONFIG.IDS.SUB_LIST);
                 if (list) {
                     Array.from(list.children).forEach(child => {
                         const text = child.textContent.toLowerCase();
@@ -1069,54 +1427,77 @@
             }
         });
 
-        const subDropdownMenu = el('div', { id: 'tm-raf-sub-menu', className: 'tm-raf-dropdown-menu' }, [
-            el('div', { className: 'tm-raf-sub-search' }, [subSearchInput]),
-            el('div', { id: 'tm-raf-sub-list', className: 'tm-raf-sub-list' }) // Populated dynamically
+        const masterCheckbox = el('input', {
+            type: 'checkbox',
+            id: CONFIG.IDS.SUB_MASTER_CB,
+            title: 'Select/Deselect All',
+            style: 'cursor: pointer; margin: 0;',
+            onChange: (e) => {
+                const list = document.getElementById(CONFIG.IDS.SUB_LIST);
+                if (e.target.checked) {
+                    state.hiddenSubreddits.clear();
+                } else {
+                    state.knownSubreddits.forEach(sub => state.hiddenSubreddits.add(sub));
+                }
+
+                // Toggle the DOM checkboxes explicitly to fix the visual desync bug
+                if (list) {
+                    const checkboxes = list.querySelectorAll('input[type="checkbox"]');
+                    checkboxes.forEach(cb => {
+                        cb.checked = e.target.checked;
+                    });
+                }
+
+                const btnText = document.getElementById(CONFIG.IDS.SUB_BTN_TEXT);
+                if (btnText) {
+                    btnText.textContent = `Select Subreddits (${state.knownSubreddits.size - state.hiddenSubreddits.size} of ${state.knownSubreddits.size})`;
+                }
+
+                queueFilter(true);
+            }
+        });
+
+        const subDropdownMenu = el('div', { id: CONFIG.IDS.SUB_MENU, className: 'tm-raf-dropdown-menu' }, [
+            el('div', { className: 'tm-raf-sub-search' }, [
+                el('label', { title: 'Select/Deselect All', style: 'display: flex; align-items: center; cursor: pointer; margin: 0;' }, [masterCheckbox]),
+                subSearchInput
+            ]),
+            el('div', { id: CONFIG.IDS.SUB_LIST, className: 'tm-raf-sub-list' })
         ]);
 
-        const subDropdownBtn = el('div', { id: 'tm-raf-sub-btn', className: 'tm-raf-input tm-raf-dropdown-btn' }, [
-            el('span', { id: 'tm-raf-sub-btn-text', textContent: 'Scanning subreddits...' }),
+        const subDropdownBtn = el('div', { id: CONFIG.IDS.SUB_BTN, className: 'tm-raf-input tm-raf-dropdown-btn' }, [
+            el('span', { id: CONFIG.IDS.SUB_BTN_TEXT, textContent: 'Scanning subreddits...' }),
             el('span', { textContent: '▼', style: 'font-size: 0.6rem; opacity: 0.7;' })
         ]);
 
         subDropdownBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             if (state.knownSubreddits.size <= 1) return;
-            const menu = document.getElementById('tm-raf-sub-menu');
-            const btn = document.getElementById('tm-raf-sub-btn');
+            const menu = document.getElementById(CONFIG.IDS.SUB_MENU);
+            const btn = document.getElementById(CONFIG.IDS.SUB_BTN);
             menu.classList.toggle('open');
             btn.classList.toggle('open');
             if (menu.classList.contains('open')) {
-                document.getElementById('tm-raf-sub-search-input').focus();
-            }
-        });
-
-        const subResetBtn = el('button', {
-            id: 'tm-raf-sub-reset-btn',
-            type: 'button',
-            className: 'tm-raf-sub-reset',
-            textContent: 'Reset',
-            onClick: (e) => {
-                e.stopPropagation();
-                state.hiddenSubreddits.clear();
-                updateSubredditDropdownUI();
-                queueFilter(true);
+                document.getElementById(CONFIG.IDS.SUB_SEARCH).focus();
             }
         });
 
         const subHeader = el('div', { className: 'tm-raf-sub-header' }, [
-            el('label', { className: 'tm-raf-label', textContent: 'Subreddit Filter' }),
-            subResetBtn
+            el('label', { className: 'tm-raf-label', textContent: 'Subreddit Filter' })
         ]);
 
-        const subDropdownContainer = el('div', { id: 'tm-raf-sub-container', className: 'tm-raf-dropdown tm-raf-row' }, [
-            subHeader,
+        const dropdownCore = el('div', { style: 'display: flex; flex-direction: column;' }, [
             subDropdownBtn,
             subDropdownMenu
         ]);
 
+        const subDropdownContainer = el('div', { className: 'tm-raf-dropdown tm-raf-row' }, [
+            subHeader,
+            dropdownCore
+        ]);
+
         const typeSelect = el('select', {
-            id: 'tm-raf-post-type', className: 'tm-raf-select',
+            id: CONFIG.IDS.POST_TYPE, className: 'tm-raf-select',
             onChange: (e) => { state.postType = e.target.value; queueFilter(true); }
         }, [
             el('option', { value: 'all', textContent: 'All Posts' }),
@@ -1126,7 +1507,7 @@
         typeSelect.value = state.postType;
 
         const typeSelectRow = el('div', { className: 'tm-raf-row', style: 'margin-bottom: 0;' }, [
-            el('label', { className: 'tm-raf-label', htmlFor: 'tm-raf-post-type', textContent: 'Post Type' }),
+            el('label', { className: 'tm-raf-label', htmlFor: CONFIG.IDS.POST_TYPE, textContent: 'Post Type' }),
             typeSelect
         ]);
 
@@ -1136,68 +1517,52 @@
         ]);
 
         // --- 3. INTERACTION OPTIONS (Highlights & Hides) ---
+
         const inputHighlight = createInput('tm-raf-highlight', 'number', '5000', state.highlightThreshold, 'highlightThreshold', v => v.trim() === '' ? null : (parseInt(v, 10) || 0));
         inputHighlight.setAttribute('min', '0');
 
         const highlightThresholdRow = el('div', { className: 'tm-raf-row', style: 'margin-bottom: 0.5rem;' }, [
             el('div', { className: 'tm-raf-input-group' }, [
-                el('span', { className: 'tm-raf-input-prefix', textContent: 'Highlight Posts with Score >' }),
+                el('span', { className: 'tm-raf-input-prefix', textContent: 'Highlight score >' }),
                 inputHighlight
             ])
         ]);
 
         const interactionSection = el('div', { className: 'tm-raf-section', style: 'margin-bottom: 0;' }, [
             highlightThresholdRow,
-            createCheckbox('tm-raf-highlight-archived-cb', 'Highlight Archived Posts', 'highlightArchived'),
+            createCheckbox(CONFIG.IDS.ARCHIVED_CB, 'Highlight archived', 'highlightArchived'),
             el('hr', { className: 'tm-raf-hr' }),
             el('div', { style: 'display: flex; flex-direction: column; gap: 0.15rem;' }, [
-                createCheckbox('tm-raf-hide-upvoted', 'Hide Upvoted Posts', 'hideUpvoted', (e) => {
-                    state.hideUpvoted = e.target.checked;
-                    if (state.hideUpvoted) {
-                        state.showUpvoted = false;
-                        const otherCb = document.getElementById('tm-raf-show-upvoted');
-                        if (otherCb) otherCb.checked = false;
-                    }
-                    queueFilter(true);
-                }),
-                createCheckbox('tm-raf-hide-promoted', 'Hide Promoted Posts', 'hidePromoted')
+                createExclusiveCheckbox('tm-raf-hide-upvoted', 'Hide upvoted', 'hideUpvoted', 'showUpvoted', 'tm-raf-show-upvoted'),
+                createExclusiveCheckbox('tm-raf-hide-downvoted', 'Hide downvoted', 'hideDownvoted', 'showDownvoted', 'tm-raf-show-downvoted'),
+                createCheckbox('tm-raf-hide-announcements', 'Hide announcement', 'hideAnnouncements'),
+                createCheckbox('tm-raf-hide-promoted', 'Hide promoted', 'hidePromoted')
             ]),
             el('hr', { className: 'tm-raf-hr' }),
-            createCheckbox('tm-raf-show-upvoted', 'Show Upvoted Posts Only', 'showUpvoted', (e) => {
-                state.showUpvoted = e.target.checked;
-                if (state.showUpvoted) {
-                    state.hideUpvoted = false;
-                    const otherCb = document.getElementById('tm-raf-hide-upvoted');
-                    if (otherCb) otherCb.checked = false;
-                }
-                queueFilter(true);
-            })
+            el('div', { style: 'display: flex; flex-direction: column; gap: 0.15rem;' }, [
+                createExclusiveCheckbox('tm-raf-show-upvoted', 'Show upvoted', 'showUpvoted', 'hideUpvoted', 'tm-raf-hide-upvoted'),
+                createExclusiveCheckbox('tm-raf-show-downvoted', 'Show downvoted', 'showDownvoted', 'hideDownvoted', 'tm-raf-hide-downvoted')
+            ])
         ]);
 
         // --- 4. INCLUSION / EXCLUSION (Show Only & Blocks) ---
 
-        // Show Only Group
         const showOnlySection = el('div', { className: 'tm-raf-row', style: 'margin-bottom: 0.75rem;' }, [
             el('label', { className: 'tm-raf-label', textContent: 'Show Only' }),
-            el('div', { className: 'tm-raf-input-group' }, [
-                el('span', { className: 'tm-raf-input-prefix', style: 'width: 80px; justify-content: flex-start;', textContent: 'Keywords' }),
-                createInput('tm-raf-show-keywords', 'search', 'e.g. megathread, official', state.showKeywords, 'showKeywords', v => v)
-            ]),
-            el('div', { className: 'tm-raf-input-group' }, [
-                el('span', { className: 'tm-raf-input-prefix', style: 'width: 80px; justify-content: flex-start;', textContent: 'Flairs' }),
+            el('div', { className: 'tm-raf-grid-group' }, [
+                el('span', { className: 'tm-raf-input-prefix', textContent: 'Keywords' }),
+                createInput('tm-raf-show-keywords', 'search', 'e.g. megathread, official', state.showKeywords, 'showKeywords', v => v),
+                el('span', { className: 'tm-raf-input-prefix', textContent: 'Flairs' }),
                 createInput('tm-raf-show-flairs', 'search', 'e.g. news, event', state.showFlairs, 'showFlairs', v => v)
             ])
         ]);
 
-        // Block Group
         const blockSection = el('div', { className: 'tm-raf-row', style: 'margin-bottom: 0;' }, [
             el('label', { className: 'tm-raf-label', textContent: 'Block' }),
-            el('div', { className: 'tm-raf-input-group' }, [
-                el('span', { className: 'tm-raf-input-prefix', style: 'width: 80px; justify-content: flex-start;', textContent: 'Keywords' }),
-                createInput('tm-raf-keywords', 'search', 'e.g. politics, spoiler', state.keywords, 'keywords', v => v)
-            ]),
-            el('div', { className: 'tm-raf-input-group' }, [
-                el('span', { className: 'tm-raf-input-prefix', style: 'width: 80px; justify-content: flex-start;', textContent: 'Flairs' }),
+            el('div', { className: 'tm-raf-grid-group' }, [
+                el('span', { className: 'tm-raf-input-prefix', textContent: 'Keywords' }),
+                createInput('tm-raf-keywords', 'search', 'e.g. politics, spoiler', state.keywords, 'keywords', v => v),
+                el('span', { className: 'tm-raf-input-prefix', textContent: 'Flairs' }),
                 createInput('tm-raf-flairs', 'search', 'e.g. meme, rant', state.flairs, 'flairs', v => v)
             ])
         ]);
@@ -1209,7 +1574,7 @@
 
         // --- Assembly ---
         const advancedContainer = el('div', {
-            id: 'tm-raf-advanced-container',
+            id: CONFIG.IDS.ADVANCED_CONTAINER,
             className: `tm-raf-advanced-container ${state.isAdvancedOpen ? 'open' : ''}`
         }, [
             postTypeSection,
@@ -1220,6 +1585,7 @@
         ]);
 
         const advancedToggleIcon = el('span', { textContent: state.isAdvancedOpen ? '▲' : '▼', style: 'margin-left: 4px; font-size: 0.65rem;' });
+
         const advancedToggle = el('div', {
             className: 'tm-raf-advanced-toggle',
             role: 'button',
@@ -1237,17 +1603,16 @@
         ]);
 
         // --- Footer ---
+        const footerSection = el('div', { className: 'tm-raf-footer' }, [
+            el('span', { id: CONFIG.IDS.STATS, className: 'tm-raf-stats', textContent: 'Loading...' })
+        ]);
+
         const btnReset = el('button', {
-            id: 'tm-raf-reset-btn', type: 'button', className: 'tm-raf-reset',
+            id: CONFIG.IDS.RESET_BTN, type: 'button', className: 'tm-raf-reset',
             textContent: 'Clear Filters', onClick: resetFilters
         });
 
-        const footerSection = el('div', { className: 'tm-raf-footer' }, [
-            el('span', { id: 'tm-raf-stats-text', className: 'tm-raf-stats', textContent: 'Loading...' }),
-            btnReset
-        ]);
-
-        const panelBody = el('div', { id: 'tm-raf-body', className: 'content' }, [
+        const panelBody = el('div', { className: 'content' }, [
             filtersSection,
             advancedToggle,
             advancedContainer,
@@ -1258,10 +1623,11 @@
             className: 'title',
             style: 'display: flex; justify-content: space-between; align-items: center; user-select: none;'
         }, [
-            el('h1', { textContent: 'POST FILTERS', style: 'margin: 0; font-weight: 300;' }),
-            el('div', { style: 'display: flex; align-items: center; gap: 6px;' }, [
-                el('div', { id: 'tm-raf-indicator', className: 'tm-raf-indicator', title: 'Filters Active' })
-            ])
+            el('div', { style: 'display: flex; align-items: center; gap: 8px;' }, [
+                el('h1', { textContent: 'POST FILTERS', style: 'margin: 0; font-weight: 300;' }),
+                el('div', { id: CONFIG.IDS.INDICATOR, className: 'tm-raf-indicator', title: 'Filters Active' })
+            ]),
+            btnReset
         ]);
 
         const panel = el('div', { className: 'spacer' }, [
@@ -1278,7 +1644,7 @@
             DOM.sidebar.prepend(panel);
         }
 
-        const emptyStateContainer = el('div', { id: 'tm-raf-empty-state', className: 'tm-raf-empty-state' }, [
+        const emptyStateContainer = el('div', { id: CONFIG.IDS.EMPTY_STATE, className: 'tm-raf-empty-state' }, [
             el('h3', { textContent: 'No posts match your filters.' }),
             el('p', { textContent: 'Adjust your date range, score, or blocklists to see content.' }),
             el('button', { className: 'btn', textContent: 'Clear All Filters', onClick: resetFilters })
@@ -1287,6 +1653,8 @@
         if (DOM.siteTable.parentNode) {
             DOM.siteTable.parentNode.insertBefore(emptyStateContainer, DOM.siteTable);
         }
+
+        syncScoreUI();
     }
 
     // ==========================================
@@ -1300,7 +1668,6 @@
         setupObserver();
         setupInfiniteScrollSentinel();
         setupKeyboardShortcuts();
-        validateMinMax();
         executeFilter();
     }
 
