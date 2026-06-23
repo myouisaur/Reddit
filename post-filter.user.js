@@ -2,7 +2,7 @@
 // @name         [Reddit] Post Filter
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      5.0
+// @version      5.3
 // @description  Filters Reddit posts dynamically with customizable rules for scores, dates, subreddits, and keywords.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -201,21 +201,35 @@
                state.hiddenSubreddits.size > 0;
     }
 
-    function splitAndClean(str) {
-        if (!str) return [];
-        return str.toLowerCase().split(',').map(s => s.trim()).filter(s => s.length > 0);
-    }
-
     function escapeRegExp(string) {
         return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
-    function buildKeywordRegexes(str) {
+    function buildWildcardRegexes(str) {
         if (!str) return [];
         return str.toLowerCase().split(',')
             .map(s => s.trim())
             .filter(s => s.length > 0)
-            .map(s => new RegExp(`\\b${escapeRegExp(s)}\\b`, 'i'));
+            .map(term => {
+                const hasStartAsterisk = term.startsWith('*');
+                const hasEndAsterisk = term.endsWith('*');
+
+                // Escape all regex special characters first
+                let escapedTerm = escapeRegExp(term);
+
+                // 1. Multi-word wildcard: " * " becomes ".*" (matches anything, including spaces)
+                escapedTerm = escapedTerm.replace(/\s+\\\*\s+/g, '.*');
+
+                // 2. Single-word wildcard: "*" becomes "\S*" (matches anything EXCEPT spaces)
+                escapedTerm = escapedTerm.replace(/\\\*/g, '\\S*');
+
+                // (^|\W) ensures the match starts at a word boundary
+                const prefix = hasStartAsterisk ? '' : '(^|\\W)';
+                // (?!\w) ensures it ends at a word boundary
+                const suffix = hasEndAsterisk ? '' : '(?!\\w)';
+
+                return new RegExp(prefix + escapedTerm + suffix, 'i');
+            });
     }
 
     function getFeedContext() {
@@ -404,8 +418,8 @@
         if (isVisible && activeShowFlairs.length > 0) {
             let matchedFlair = false;
             if (data.flairText) {
-                for (const fl of activeShowFlairs) {
-                    if (data.flairText.includes(fl)) {
+                for (const flRegex of activeShowFlairs) {
+                    if (flRegex.test(data.flairText)) {
                         matchedFlair = true;
                         break;
                     }
@@ -425,8 +439,8 @@
         }
 
         if (isVisible && activeFlairs.length > 0 && data.flairText) {
-            for (const fl of activeFlairs) {
-                if (data.flairText.includes(fl)) {
+            for (const flRegex of activeFlairs) {
+                if (flRegex.test(data.flairText)) {
                     isVisible = false;
                     break;
                 }
@@ -452,10 +466,10 @@
             const selector = state.needsFullReeval ? CONFIG.SELECTORS.POST_ITEM : `${CONFIG.SELECTORS.POST_ITEM}:not([data-tm-eval="true"])`;
             const postsToProcess = document.querySelectorAll(selector);
 
-            const activeKeywordRegexes = buildKeywordRegexes(state.keywords);
-            const activeFlairs = splitAndClean(state.flairs);
-            const activeShowKeywordRegexes = buildKeywordRegexes(state.showKeywords);
-            const activeShowFlairs = splitAndClean(state.showFlairs);
+            const activeKeywordRegexes = buildWildcardRegexes(state.keywords);
+            const activeFlairs = buildWildcardRegexes(state.flairs);
+            const activeShowKeywordRegexes = buildWildcardRegexes(state.showKeywords);
+            const activeShowFlairs = buildWildcardRegexes(state.showFlairs);
 
             // Phase 1: Read metrics
             const updates = [];
@@ -1185,8 +1199,9 @@
         subBtn.style.opacity = '1';
         btnText.textContent = `Select Subreddits (${state.knownSubreddits.size - state.hiddenSubreddits.size} of ${state.knownSubreddits.size})`;
 
-        if (list.innerHTML === '') {
-            // Render the pre-sorted list directly for performance
+        // Re-render the list ONLY if new subreddits were discovered (length mismatch)
+        if (list.children.length !== state.sortedSubreddits.length) {
+            list.innerHTML = ''; // Clear stale list
             state.sortedSubreddits.forEach(sub => {
                 const checkbox = el('input', {
                     type: 'checkbox',
@@ -1532,7 +1547,7 @@
             highlightThresholdRow,
             createCheckbox(CONFIG.IDS.ARCHIVED_CB, 'Highlight archived', 'highlightArchived'),
             el('hr', { className: 'tm-raf-hr' }),
-            el('div', { style: 'display: flex; flex-direction: column; gap: 0.15rem;' }, [
+            el('div', { style: 'display: flex; flex-direction: column; gap: 0.15rem; margin-top: 0.2rem;' }, [
                 createExclusiveCheckbox('tm-raf-hide-upvoted', 'Hide upvoted', 'hideUpvoted', 'showUpvoted', 'tm-raf-show-upvoted'),
                 createExclusiveCheckbox('tm-raf-hide-downvoted', 'Hide downvoted', 'hideDownvoted', 'showDownvoted', 'tm-raf-show-downvoted'),
                 createCheckbox('tm-raf-hide-announcements', 'Hide announcement', 'hideAnnouncements'),
@@ -1551,9 +1566,9 @@
             el('label', { className: 'tm-raf-label', textContent: 'Show Only' }),
             el('div', { className: 'tm-raf-grid-group' }, [
                 el('span', { className: 'tm-raf-input-prefix', textContent: 'Keywords' }),
-                createInput('tm-raf-show-keywords', 'search', 'e.g. megathread, official', state.showKeywords, 'showKeywords', v => v),
+                createInput('tm-raf-show-keywords', 'search', 'e.g. megathread, offi*', state.showKeywords, 'showKeywords', v => v),
                 el('span', { className: 'tm-raf-input-prefix', textContent: 'Flairs' }),
-                createInput('tm-raf-show-flairs', 'search', 'e.g. news, event', state.showFlairs, 'showFlairs', v => v)
+                createInput('tm-raf-show-flairs', 'search', 'e.g. news, *event*', state.showFlairs, 'showFlairs', v => v)
             ])
         ]);
 
@@ -1561,9 +1576,9 @@
             el('label', { className: 'tm-raf-label', textContent: 'Block' }),
             el('div', { className: 'tm-raf-grid-group' }, [
                 el('span', { className: 'tm-raf-input-prefix', textContent: 'Keywords' }),
-                createInput('tm-raf-keywords', 'search', 'e.g. politics, spoiler', state.keywords, 'keywords', v => v),
+                createInput('tm-raf-keywords', 'search', 'e.g. politics, spoil*', state.keywords, 'keywords', v => v),
                 el('span', { className: 'tm-raf-input-prefix', textContent: 'Flairs' }),
-                createInput('tm-raf-flairs', 'search', 'e.g. meme, rant', state.flairs, 'flairs', v => v)
+                createInput('tm-raf-flairs', 'search', 'e.g. meme, *rant*', state.flairs, 'flairs', v => v)
             ])
         ]);
 
