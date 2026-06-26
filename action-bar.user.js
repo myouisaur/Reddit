@@ -2,12 +2,13 @@
 // @name         [Reddit] Action Bar
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      2.0
+// @version      2.3
 // @description  Adds quick links to the action bar.
 // @author       Xiv
 // @match        *://*.reddit.com/*
 // @match        *://*.archive.org/*
 // @match        *://*.rapidsave.com/*
+// @match        *://*.redvid.io/*
 // @noframes
 // @run-at       document-start
 // @updateURL    https://myouisaur.github.io/Reddit/action-bar.user.js
@@ -18,6 +19,8 @@
 // INJECTED ACTION BAR BUTTONS
 // 1. archive[save/view]
 // 2. DL vid
+//    - RedGifs posts → redvid.io/redgifs-downloader (uses data-url)
+//    - All other posts → rapidsave.com (uses Reddit permalink)
 // ==========================================
 
 (function () {
@@ -38,8 +41,7 @@
             archiveView: '#ff9800',
             downloadBtn: '#E53935',
             rsSuccessBg: '#4CAF50',
-            rsSuccessText: '#ffffff',
-            rsProcessingBg: '#ff9800'
+            rsSuccessText: '#ffffff'
         },
         selectors: {
             redditButtons: 'ul.flat-list.buttons:not(.action-bar-processed), div[data-click-id="background"] > div:last-child:not(.action-bar-processed)',
@@ -51,8 +53,10 @@
             archiveSubmitBtn: 'button[type="submit"], input[type="submit"], button.web-save-button',
 
             rsDownloadBtn: 'a.downloadbutton[href*="download.php"]',
-            rsUrlInput: '#url',
-            rsSubmitBtn: '#download',
+
+            rvUrlInput: '#url',
+            rvSubmitBtn: '#submit-btn',
+            rvDownloadBtn: 'a.download-video',
 
             feedContainers: ['#siteTable', '#AppRouter-main-content', 'shreddit-app']
         },
@@ -76,6 +80,8 @@
                 setupArchiveAutomation();
             } else if (host.includes('rapidsave.com')) {
                 setupRapidSaveAutomation();
+            } else if (host.includes('redvid.io')) {
+                setupRedVidAutomation();
             }
         } catch (error) {
             console.error('[Reddit Action Bar] Initialization failed:', error);
@@ -158,13 +164,29 @@
             const commentLinkEl = list.querySelector(CONFIG.selectors.redditCommentLink);
             if (!commentLinkEl || !commentLinkEl.href) return;
 
-            const targetUrl = commentLinkEl.href;
+            const permalinkUrl = commentLinkEl.href;
             const isOldReddit = list.tagName === 'UL';
             const nativeStyles = sampleNativeAnchorStyles(list, commentLinkEl);
 
+            // Detect RedGifs source — present in old Reddit's domain span.
+            // For new Reddit, fall back to checking the post's data-url attribute.
+            const thing = list.closest('.thing');
+            const domainLink = list.closest('.entry')?.querySelector('.domain a') ??
+                               thing?.querySelector('.domain a');
+            const isRedGifs = domainLink?.href?.includes('redgifs.com') ??
+                               thing?.dataset?.url?.includes('redgifs.com') ??
+                               false;
+
+            // RedGifs posts: pass the direct media URL to redvid.io.
+            // All other posts: pass the Reddit permalink to rapidsave.com.
+            const mediaUrl = thing?.dataset?.url ?? null;
+            const downloadRoute = isRedGifs && mediaUrl
+                ? { service: 'redvid', url: mediaUrl }
+                : { service: 'rapidsave', url: permalinkUrl };
+
             const fragment = document.createDocumentFragment();
-            fragment.appendChild(createArchiveUi(targetUrl, isOldReddit, nativeStyles));
-            fragment.appendChild(createDownloadUi(targetUrl, isOldReddit, nativeStyles));
+            fragment.appendChild(createArchiveUi(permalinkUrl, isOldReddit, nativeStyles));
+            fragment.appendChild(createDownloadUi(downloadRoute, isOldReddit, nativeStyles));
 
             const resLcNode = list.querySelector(CONFIG.selectors.resLcButton);
             const insertTarget = resLcNode ? resLcNode.closest('li') : null;
@@ -294,11 +316,19 @@
         return wrapper;
     }
 
-    function createDownloadUi(targetUrl, isOldReddit, nativeStyles) {
+    function createDownloadUi(downloadRoute, isOldReddit, nativeStyles) {
         const wrapper = document.createElement(isOldReddit ? 'li' : 'div');
         if (!isOldReddit) wrapper.style.display = 'inline-block';
 
-        const downloadUrl = `https://rapidsave.com/?reddit_action=download&url=${encodeURIComponent(targetUrl)}`;
+        let downloadUrl;
+        if (downloadRoute.service === 'redvid') {
+            downloadUrl = `https://redvid.io/redgifs-downloader?reddit_action=download&url=${encodeURIComponent(downloadRoute.url)}`;
+        } else {
+            // Link directly to the results page — RapidSave redirects there anyway,
+            // so skipping the homepage means our script lands on the right page immediately.
+            downloadUrl = `https://rapidsave.com/info?url=${encodeURIComponent(downloadRoute.url)}`;
+        }
+
         wrapper.appendChild(createStyledLink('DL vid', downloadUrl, CONFIG.colors.downloadBtn, isOldReddit, nativeStyles));
 
         return wrapper;
@@ -325,66 +355,103 @@
     }
 
     // ==========================================
+    // REDVID.IO AUTOMATION (RedGifs)
+    // ==========================================
+
+    async function setupRedVidAutomation() {
+        const params = new URLSearchParams(window.location.search);
+
+        if (params.get('reddit_action') !== 'download') return;
+
+        const targetUrl = params.get('url');
+        if (!isValidRedGifsUrl(targetUrl)) return;
+
+        try {
+            const urlInput = await waitForElement(CONFIG.selectors.rvUrlInput);
+            const submitBtn = await waitForElement(CONFIG.selectors.rvSubmitBtn);
+
+            if (!urlInput || !submitBtn) return;
+
+            // Fill the URL field using native setter so any framework listeners fire
+            const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+            if (nativeSetter) {
+                nativeSetter.call(urlInput, targetUrl);
+            } else {
+                urlInput.value = targetUrl;
+            }
+
+            urlInput.dispatchEvent(new Event('input', { bubbles: true }));
+            urlInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+            setTimeout(() => {
+                try {
+                    if (document.body.contains(submitBtn)) {
+                        submitBtn.click();
+                        startHuntingForRedVidDownload();
+                    }
+                } catch (clickError) {
+                    console.error('[Reddit Action Bar][RedVid] Error clicking submit.', clickError);
+                }
+            }, CONFIG.timeouts.clickDelay);
+
+        } catch (error) {
+            console.warn('[Reddit Action Bar][RedVid] Submit elements not found on redvid.io.', error.message);
+        }
+    }
+
+    async function startHuntingForRedVidDownload() {
+        try {
+            // The page re-renders after submit — wait for the download anchor to appear
+            const btn = await waitForElement(CONFIG.selectors.rvDownloadBtn);
+            if (document.body.contains(btn)) btn.click();
+        } catch (error) {
+            console.warn('[Reddit Action Bar][RedVid] Download button did not appear.', error.message);
+        }
+    }
+
+    // ==========================================
     // RAPIDSAVE AUTOMATION
     // ==========================================
 
     async function setupRapidSaveAutomation() {
+        // We link directly to rapidsave.com/info?url=... so the homepage form
+        // is never visited. Detect the results page by pathname and hunt immediately.
+        if (!location.pathname.startsWith('/info')) return;
+
         const params = new URLSearchParams(window.location.search);
-
-        const startHuntingForDownload = async () => {
-            try {
-                const btn = await waitForElement(CONFIG.selectors.rsDownloadBtn);
-                btn.removeAttribute('onclick');
-                btn.style.backgroundColor = CONFIG.colors.rsSuccessBg;
-                btn.style.borderColor = CONFIG.colors.rsSuccessBg;
-                btn.style.color = CONFIG.colors.rsSuccessText;
-                btn.textContent = '';
-
-                const icon = document.createElement('i');
-                icon.className = 'fa fa-check';
-                btn.appendChild(icon);
-                btn.appendChild(document.createTextNode(' Forcing Download...'));
-
-                setTimeout(() => {
-                    try {
-                        if (document.body.contains(btn)) btn.click();
-                    } catch (clickError) {
-                        console.error('[Reddit Action Bar] Error clicking RS download.', clickError);
-                    }
-                }, CONFIG.timeouts.clickDelay);
-            } catch (error) {
-                console.warn('[Reddit Action Bar] Failed to find RapidSave download button.', error.message);
-            }
-        };
-
         const targetUrl = params.get('url');
+        if (!isValidRedditUrl(targetUrl)) return;
 
-        if (params.get('reddit_action') === 'download' && isValidRedditUrl(targetUrl)) {
-            try {
-                const urlInput = await waitForElement(CONFIG.selectors.rsUrlInput);
-                const submitBtn = await waitForElement(CONFIG.selectors.rsSubmitBtn);
+        startHuntingForDownload();
+    }
 
-                if (urlInput && submitBtn) {
-                    urlInput.value = targetUrl;
-                    urlInput.dispatchEvent(new Event('input', { bubbles: true }));
+    async function startHuntingForDownload() {
+        try {
+            // Results page is server-rendered — button may already be in the HTML.
+            // waitForElementReady polls via rAF so it catches it regardless of timing.
+            const btn = await waitForElementReady(CONFIG.selectors.rsDownloadBtn);
 
-                    sessionStorage.setItem('rs_auto_download', 'true');
-                    submitBtn.style.backgroundColor = CONFIG.colors.rsProcessingBg;
-                    submitBtn.textContent = 'Script Clicking...';
+            btn.removeAttribute('onclick');
+            btn.style.backgroundColor = CONFIG.colors.rsSuccessBg;
+            btn.style.borderColor = CONFIG.colors.rsSuccessBg;
+            btn.style.color = CONFIG.colors.rsSuccessText;
+            btn.textContent = '';
 
-                    setTimeout(() => {
-                        if (document.body.contains(submitBtn)) {
-                            submitBtn.click();
-                            startHuntingForDownload();
-                        }
-                    }, CONFIG.timeouts.clickDelay);
+            const icon = document.createElement('i');
+            icon.className = 'fa fa-check';
+            btn.appendChild(icon);
+            btn.appendChild(document.createTextNode(' Forcing Download...'));
+
+            setTimeout(() => {
+                try {
+                    if (document.body.contains(btn)) btn.click();
+                } catch (clickError) {
+                    console.error('[Reddit Action Bar] Error clicking RS download button.', clickError);
                 }
-            } catch (error) {
-                console.warn('[Reddit Action Bar] Submit elements not found on RapidSave.', error.message);
-            }
-        } else if (sessionStorage.getItem('rs_auto_download') === 'true') {
-            sessionStorage.removeItem('rs_auto_download');
-            startHuntingForDownload();
+            }, CONFIG.timeouts.clickDelay);
+
+        } catch (error) {
+            console.warn('[Reddit Action Bar] Download HD button did not appear on RapidSave results page.', error.message);
         }
     }
 
@@ -401,6 +468,15 @@
         }
     }
 
+    function isValidRedGifsUrl(url) {
+        try {
+            const parsed = new URL(url);
+            return parsed.hostname.endsWith('redgifs.com');
+        } catch {
+            return false;
+        }
+    }
+
     function debounce(fn, delay) {
         let t;
         return (...args) => {
@@ -409,6 +485,9 @@
         };
     }
 
+    // waitForElement — MutationObserver-based. Best for elements injected by JS
+    // after page load. May miss elements that are server-rendered into the initial
+    // HTML, since those arrive before the observer attaches at document-start.
     function waitForElement(selector, timeoutMs = CONFIG.timeouts.elementWait) {
         return new Promise((resolve, reject) => {
             const el = document.querySelector(selector);
@@ -429,6 +508,29 @@
                 observer.disconnect();
                 reject(new Error(`Element '${selector}' not found within ${timeoutMs}ms.`));
             }, timeoutMs);
+        });
+    }
+
+    // waitForElementReady — rAF polling fallback for server-rendered elements.
+    // Used on the RapidSave results page where the download button is in the
+    // initial HTML but the script runs at document-start before the DOM is built.
+    // Polls every animation frame until the element appears or timeout is reached.
+    function waitForElementReady(selector, timeoutMs = CONFIG.timeouts.elementWait) {
+        return new Promise((resolve, reject) => {
+            const start = performance.now();
+
+            function poll() {
+                const el = document.querySelector(selector);
+                if (el) return resolve(el);
+
+                if (performance.now() - start >= timeoutMs) {
+                    return reject(new Error(`Element '${selector}' not ready within ${timeoutMs}ms.`));
+                }
+
+                requestAnimationFrame(poll);
+            }
+
+            requestAnimationFrame(poll);
         });
     }
 
