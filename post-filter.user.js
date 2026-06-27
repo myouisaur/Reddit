@@ -2,7 +2,7 @@
 // @name         [Reddit] Post Filter
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      5.3
+// @version      5.4
 // @description  Filters Reddit posts dynamically with customizable rules for scores, dates, subreddits, and keywords.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -77,7 +77,8 @@
             ],
             CB_INPUTS: [
                 'tm-raf-hide-upvoted', 'tm-raf-show-upvoted', 'tm-raf-hide-downvoted',
-                'tm-raf-show-downvoted', 'tm-raf-hide-promoted', 'tm-raf-hide-announcements'
+                'tm-raf-show-downvoted', 'tm-raf-hide-promoted', 'tm-raf-hide-announcements',
+                'tm-raf-hide-downloaded', 'tm-raf-show-downloaded'
             ]
         },
         STORAGE_KEY: 'tm_reddit_filter_session_v3',
@@ -106,6 +107,8 @@
         showUpvoted: false,
         hideDownvoted: false,
         showDownvoted: false,
+        hideDownloaded: false,
+        showDownloaded: false,
         hidePromoted: false,
         hideAnnouncements: false,
         postType: 'all',
@@ -191,7 +194,9 @@
                state.dateFrom !== null ||
                state.dateTo !== null || state.hideUpvoted || state.showUpvoted ||
                state.hideDownvoted || state.showDownvoted ||
-               state.hidePromoted || state.hideAnnouncements ||
+               state.hideDownloaded || state.showDownloaded ||
+               state.hidePromoted ||
+               state.hideAnnouncements ||
                state.showKeywords.trim() !== '' ||
                state.showFlairs.trim() !== '' ||
                state.keywords.trim() !== '' ||
@@ -256,7 +261,6 @@
 
                 const currentContext = getFeedContext();
                 const isSameContext = (parsed.feedContext === currentContext);
-
                 // Only retain score thresholds if we are on the exact same feed context
                 state.minScore = isSameContext ? (parsed.minScore ?? 0) : 0;
                 state.isMaxScoreLocked = isSameContext ? (parsed.isMaxScoreLocked ?? false) : false;
@@ -269,6 +273,8 @@
                 state.showUpvoted = parsed.showUpvoted ?? false;
                 state.hideDownvoted = parsed.hideDownvoted ?? false;
                 state.showDownvoted = parsed.showDownvoted ?? false;
+                state.hideDownloaded = parsed.hideDownloaded ?? false;
+                state.showDownloaded = parsed.showDownloaded ?? false;
                 state.hidePromoted = parsed.hidePromoted ?? false;
                 state.hideAnnouncements = parsed.hideAnnouncements ?? false;
                 state.postType = parsed.postType ?? 'all';
@@ -300,6 +306,8 @@
                 showUpvoted: state.showUpvoted,
                 hideDownvoted: state.hideDownvoted,
                 showDownvoted: state.showDownvoted,
+                hideDownloaded: state.hideDownloaded,
+                showDownloaded: state.showDownloaded,
                 hidePromoted: state.hidePromoted,
                 hideAnnouncements: state.hideAnnouncements,
                 postType: state.postType,
@@ -342,7 +350,6 @@
             const isAnnouncement = postEl.querySelector(CONFIG.SELECTORS.ANNOUNCEMENT_TAG) !== null;
             const isTextPost = postEl.classList.contains('self');
             const isArchived = postEl.querySelector(CONFIG.SELECTORS.ARCHIVED_ARROW) !== null;
-
             cached = { timestamp, titleText, flairText, subreddit, isPromoted, isAnnouncement, isTextPost, isArchived };
             state.postCache.set(postEl, cached);
         }
@@ -355,7 +362,11 @@
 
         const isUpvoted = postEl.querySelector(CONFIG.SELECTORS.UPVOTED_ARROW) !== null;
         const isDownvoted = postEl.querySelector(CONFIG.SELECTORS.DOWNVOTED_ARROW) !== null;
-        return { ...cached, score, isUpvoted, isDownvoted };
+
+        // Relies on the state applied by [Reddit] Post Toggle & Track script
+        const isDownloaded = postEl.classList.contains('xiv-downloaded');
+
+        return { ...cached, score, isUpvoted, isDownvoted, isDownloaded };
     }
 
     function checkPostVisibility(postEl, activeKeywordRegexes, activeFlairs, activeShowKeywordRegexes, activeShowFlairs) {
@@ -381,19 +392,21 @@
         if (isVisible && state.minScore > 0 && data.score < state.minScore) isVisible = false;
         if (isVisible && validMax !== null && data.score > validMax) isVisible = false;
 
-        // --- Upvoted / Downvoted State Filters ---
+        // --- Interaction State Filters ---
 
         // Exclusion (Hide) logic acts as independent "AND" statements
         if (isVisible && state.hideUpvoted && data.isUpvoted) isVisible = false;
         if (isVisible && state.hideDownvoted && data.isDownvoted) isVisible = false;
+        if (isVisible && state.hideDownloaded && data.isDownloaded) isVisible = false;
 
         // Inclusion (Show) logic acts as a grouped "OR" statement bucket
-        if (isVisible && (state.showUpvoted || state.showDownvoted)) {
+        if (isVisible && (state.showUpvoted || state.showDownvoted || state.showDownloaded)) {
             const matchesShowUp = state.showUpvoted && data.isUpvoted;
             const matchesShowDown = state.showDownvoted && data.isDownvoted;
+            const matchesShowDl = state.showDownloaded && data.isDownloaded;
 
-            // If the user has active inclusion filters, but this post matches neither of them, hide it
-            if (!matchesShowUp && !matchesShowDown) {
+            // If the user has active inclusion filters, but this post matches none of them, hide it
+            if (!matchesShowUp && !matchesShowDown && !matchesShowDl) {
                 isVisible = false;
             }
         }
@@ -461,7 +474,6 @@
     function executeFilter() {
         if (state.isMutating) return;
         state.isMutating = true;
-
         requestAnimationFrame(() => {
             const selector = state.needsFullReeval ? CONFIG.SELECTORS.POST_ITEM : `${CONFIG.SELECTORS.POST_ITEM}:not([data-tm-eval="true"])`;
             const postsToProcess = document.querySelectorAll(selector);
@@ -500,7 +512,6 @@
                 }
 
                 updates.push({ post, isVisible, isHighlighted, isHighlightedArchived });
-
                 if (state.needsFullReeval) {
                     state.totalPosts++;
                     if (isVisible) state.visiblePosts++;
@@ -545,7 +556,6 @@
 
             saveState();
             updateUIState();
-
             setTimeout(() => { state.isMutating = false; }, 0);
         });
     }
@@ -631,6 +641,8 @@
         state.showUpvoted = false;
         state.hideDownvoted = false;
         state.showDownvoted = false;
+        state.hideDownloaded = false;
+        state.showDownloaded = false;
         state.hidePromoted = false;
         state.hideAnnouncements = false;
         state.postType = 'all';
@@ -661,11 +673,11 @@
                     for (const node of mutation.addedNodes) {
                         if (node.nodeType === Node.ELEMENT_NODE) {
                             if (node.matches(CONFIG.SELECTORS.POST_ITEM) || node.querySelector(CONFIG.SELECTORS.POST_ITEM)) {
-                                hasNewPosts = true;
+                                 hasNewPosts = true;
                             }
                         }
                     }
-                }
+                 }
             }
 
             if (!document.getElementById(CONFIG.IDS.SENTINEL)) {
@@ -673,18 +685,24 @@
             }
 
             if (sentinelMissing) {
-                setupInfiniteScrollSentinel();
+                 setupInfiniteScrollSentinel();
             }
 
-            if (hasNewPosts) {
-                queueFilter(false);
+            // In case external scripts (like the Toggle & Track script) modify classes we care about without adding nodes
+            const isClassMutation = mutations.some(m => m.type === 'attributes' && m.attributeName === 'class' && m.target.matches(CONFIG.SELECTORS.POST_ITEM));
+
+            if (hasNewPosts || isClassMutation) {
+                queueFilter(isClassMutation); // Force full reeval if classes changed to ensure states are re-read
             }
         });
 
-        observer.observe(DOM.mainContent, { childList: true, subtree: true });
+        observer.observe(DOM.mainContent, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
 
         DOM.siteTable.addEventListener('click', (e) => {
-            if (e.target.matches('.arrow')) queueFilter(true);
+            if (e.target.matches('.arrow') || e.target.closest('.xiv-download-btn')) {
+                // Delay queue to allow Reddit/other scripts to update the DOM
+                setTimeout(() => queueFilter(true), 50);
+            }
         });
     }
 
@@ -712,7 +730,7 @@
                 e.preventDefault();
                 const minInput = document.getElementById(CONFIG.IDS.MIN_INPUT);
                 if (minInput) minInput.focus();
-            }
+             }
         });
     }
 
@@ -722,7 +740,6 @@
 
     function injectStyles() {
         if (document.getElementById('tm-raf-styles')) return;
-
         const css = `
             :root {
                 --tm-raf-highlight-color: rgba(255, 215, 0, 0.8);
@@ -1153,7 +1170,6 @@
                 text-transform: none;
             }
         `;
-
         document.head.appendChild(el('style', { id: 'tm-raf-styles', textContent: css }));
     }
 
@@ -1187,7 +1203,6 @@
         if (!list || !btnText || !subBtn) return;
 
         updateMasterCheckboxState();
-
         if (state.knownSubreddits.size <= 1) {
             btnText.textContent = 'No subreddits to filter';
             subBtn.style.pointerEvents = 'none';
@@ -1201,7 +1216,8 @@
 
         // Re-render the list ONLY if new subreddits were discovered (length mismatch)
         if (list.children.length !== state.sortedSubreddits.length) {
-            list.innerHTML = ''; // Clear stale list
+            list.innerHTML = '';
+            // Clear stale list
             state.sortedSubreddits.forEach(sub => {
                 const checkbox = el('input', {
                     type: 'checkbox',
@@ -1325,6 +1341,7 @@
 
         const inputMinScore = el('input', { id: CONFIG.IDS.MIN_INPUT, type: 'number', className: 'tm-raf-score-input', min: 0, value: state.minScore, onInput: onMinChange });
         const inputMaxScore = el('input', { id: CONFIG.IDS.MAX_INPUT, type: 'number', className: 'tm-raf-score-input', min: 0, value: state.maxScore, onInput: onMaxChange });
+
         const rangeMin = el('input', { id: CONFIG.IDS.MIN_RANGE, type: 'range', className: 'tm-raf-range-input', min: 0, onInput: onMinChange });
         const rangeMax = el('input', { id: CONFIG.IDS.MAX_RANGE, type: 'range', className: 'tm-raf-range-input', min: 0, onInput: onMaxChange });
 
@@ -1402,6 +1419,7 @@
             value: formatDateForInput(state.dateFrom),
             onChange: (e) => { state.dateFrom = parseInputDateToLocal(e.target.value, false); queueFilter(true); }
         });
+
         const inputDateTo = el('input', {
             id: 'tm-raf-date-to', type: 'date', className: 'tm-raf-input',
             value: formatDateForInput(state.dateTo),
@@ -1550,13 +1568,15 @@
             el('div', { style: 'display: flex; flex-direction: column; gap: 0.15rem; margin-top: 0.2rem;' }, [
                 createExclusiveCheckbox('tm-raf-hide-upvoted', 'Hide upvoted', 'hideUpvoted', 'showUpvoted', 'tm-raf-show-upvoted'),
                 createExclusiveCheckbox('tm-raf-hide-downvoted', 'Hide downvoted', 'hideDownvoted', 'showDownvoted', 'tm-raf-show-downvoted'),
+                createExclusiveCheckbox('tm-raf-hide-downloaded', 'Hide downloaded', 'hideDownloaded', 'showDownloaded', 'tm-raf-show-downloaded'),
                 createCheckbox('tm-raf-hide-announcements', 'Hide announcement', 'hideAnnouncements'),
                 createCheckbox('tm-raf-hide-promoted', 'Hide promoted', 'hidePromoted')
             ]),
             el('hr', { className: 'tm-raf-hr' }),
             el('div', { style: 'display: flex; flex-direction: column; gap: 0.15rem;' }, [
                 createExclusiveCheckbox('tm-raf-show-upvoted', 'Show upvoted', 'showUpvoted', 'hideUpvoted', 'tm-raf-hide-upvoted'),
-                createExclusiveCheckbox('tm-raf-show-downvoted', 'Show downvoted', 'showDownvoted', 'hideDownvoted', 'tm-raf-hide-downvoted')
+                createExclusiveCheckbox('tm-raf-show-downvoted', 'Show downvoted', 'showDownvoted', 'hideDownvoted', 'tm-raf-hide-downvoted'),
+                createExclusiveCheckbox('tm-raf-show-downloaded', 'Show downloaded', 'showDownloaded', 'hideDownloaded', 'tm-raf-hide-downloaded')
             ])
         ]);
 
@@ -1701,7 +1721,6 @@
 
     function bootstrap() {
         if (tryInit()) return;
-
         let throttleTimer = null;
         const observer = new MutationObserver(() => {
             if (throttleTimer) return;
@@ -1711,7 +1730,6 @@
                 tryInit(observer);
             }, 50);
         });
-
         observer.observe(document.documentElement, { childList: true, subtree: true });
     }
 
