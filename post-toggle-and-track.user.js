@@ -2,7 +2,7 @@
 // @name         [Reddit] Post Toggle & Track
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      4.5
+// @version      4.6
 // @description  Adds a toggle button to cleanly collapse posts and a tracker for downloaded posts.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -29,12 +29,12 @@
         return;
     }
 
-    if (window.location.pathname.includes('/comments/')) {
-        return;
-    }
-
     if (window.__redditCollapserRunning) return;
     window.__redditCollapserRunning = true;
+
+    // 'comments' = download-badge only, no collapse UI, no collapse CSS.
+    // 'feed'     = full behavior: collapse toggle + download button.
+    const PAGE_MODE = window.location.pathname.includes('/comments/') ? 'comments' : 'feed';
 
     // =========================================================
     // CONFIGURATION
@@ -673,21 +673,20 @@
     const UI = {
         injectStyles() {
             const style = document.createElement('style');
-            style.textContent = `
+
+            // Shared styles: always injected regardless of page mode.
+            // These only affect the OP post (.thing.link) and script-owned elements,
+            // so they are safe on both feed and comments pages.
+            const sharedCSS = `
                 .thing.${CONFIG.CLASSES.PROCESSED} {
                     position: relative !important;
                     border-left: 3px solid rgba(128, 128, 128, 0.4) !important;
                     padding-left: 6px !important;
-                    overflow: hidden !important;
                     transition: background-color 0.2s ease !important;
                 }
 
                 .thing.${CONFIG.CLASSES.DOWNLOADED} {
                     background-color: rgba(34, 197, 94, 0.08) !important;
-                }
-
-                .thing.${CONFIG.CLASSES.ANIMATING} {
-                    transition: max-height ${CONFIG.ANIMATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1), margin-bottom ${CONFIG.ANIMATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) !important;
                 }
 
                 .${CONFIG.CLASSES.ACTION_CONTAINER} {
@@ -728,6 +727,19 @@
                 .thing.${CONFIG.CLASSES.DOWNLOADED} .${CONFIG.CLASSES.DOWNLOAD_BTN} {
                     color: #22c55e !important;
                     opacity: 1 !important;
+                }
+            `;
+
+            // Feed-only styles: collapse animation and visibility rules.
+            // These use broad .thing selectors that would incorrectly hide comment
+            // elements on /comments/ pages, so they are NEVER injected in comments mode.
+            const feedOnlyCSS = PAGE_MODE === 'feed' ? `
+                .thing.${CONFIG.CLASSES.ANIMATING} {
+                    transition: max-height ${CONFIG.ANIMATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1), margin-bottom ${CONFIG.ANIMATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) !important;
+                }
+
+                .thing.${CONFIG.CLASSES.PROCESSED} {
+                    overflow: hidden !important;
                 }
 
                 /* Hides the download button completely when the post is collapsed */
@@ -782,7 +794,9 @@
                 .thing.${CONFIG.CLASSES.LAST_COLLAPSED} {
                     margin-bottom: 8px !important;
                 }
+            ` : '';
 
+            const toastCSS = `
                 /* ----------------- TOAST STYLES ----------------- */
                 .${CONFIG.UI_PREFIX}-toast {
                     position: fixed;
@@ -837,6 +851,8 @@
                     to { opacity: 0; transform: translateX(20px) scale(0.95); }
                 }
             `;
+
+            style.textContent = sharedCSS + feedOnlyCSS + toastCSS;
             document.head.appendChild(style);
 
             // Cross-device DOM UI Listener
@@ -929,7 +945,8 @@
 
             requestAnimationFrame(() => {
                 posts.forEach(post => {
-                    if (post.querySelector(`.${CONFIG.CLASSES.TOGGLE_BTN}`)) {
+                    // Guard: already fully processed — skip.
+                    if (post.querySelector(`.${CONFIG.CLASSES.DOWNLOAD_BTN}`)) {
                         post.classList.add(CONFIG.CLASSES.PROCESSED);
                         return;
                     }
@@ -945,32 +962,46 @@
                     const actionContainer = document.createElement('div');
                     actionContainer.className = CONFIG.CLASSES.ACTION_CONTAINER;
 
-                    const btn = createToggleButton(post, postId, state.c);
                     const dlBtn = createDownloadButton(post, postId, state.d);
-                    const collapsedTitle = createCollapsedTitle(post);
-
-                    actionContainer.appendChild(btn);
                     actionContainer.appendChild(dlBtn);
 
-                    const rankElem = post.querySelector('.rank');
-                    if (rankElem) {
-                        post.insertBefore(actionContainer, rankElem);
-                        post.insertBefore(collapsedTitle, rankElem);
-                    } else if (post.firstChild) {
-                        post.insertBefore(actionContainer, post.firstChild);
-                        post.insertBefore(collapsedTitle, actionContainer.nextSibling);
+                    if (PAGE_MODE === 'feed') {
+                        // Feed mode: full UI — collapse toggle + collapsed title + collapse state.
+                        const btn = createToggleButton(post, postId, state.c);
+                        const collapsedTitle = createCollapsedTitle(post);
+
+                        // Insert toggle above download button in the action container.
+                        actionContainer.insertBefore(btn, dlBtn);
+
+                        const rankElem = post.querySelector('.rank');
+                        if (rankElem) {
+                            post.insertBefore(actionContainer, rankElem);
+                            post.insertBefore(collapsedTitle, rankElem);
+                        } else if (post.firstChild) {
+                            post.insertBefore(actionContainer, post.firstChild);
+                            post.insertBefore(collapsedTitle, actionContainer.nextSibling);
+                        } else {
+                            post.appendChild(actionContainer);
+                            post.appendChild(collapsedTitle);
+                        }
+
+                        if (state.c) {
+                            post.classList.add(CONFIG.CLASSES.COLLAPSED);
+                            post.classList.add(CONFIG.CLASSES.HIDDEN_CONTENT);
+                            post.style.maxHeight = `${CONFIG.COLLAPSED_HEIGHT}px`;
+                        }
+
+                        updateGapState(post);
                     } else {
-                        post.appendChild(actionContainer);
-                        post.appendChild(collapsedTitle);
+                        // Comments mode: download button only — no collapse UI, no collapse state.
+                        // The OP post (.thing.link) is at the top of the thread; comment
+                        // .thing elements are intentionally left untouched.
+                        if (post.firstChild) {
+                            post.insertBefore(actionContainer, post.firstChild);
+                        } else {
+                            post.appendChild(actionContainer);
+                        }
                     }
-
-                    if (state.c) {
-                        post.classList.add(CONFIG.CLASSES.COLLAPSED);
-                        post.classList.add(CONFIG.CLASSES.HIDDEN_CONTENT);
-                        post.style.maxHeight = `${CONFIG.COLLAPSED_HEIGHT}px`;
-                    }
-
-                    updateGapState(post);
                 });
             });
         } catch (error) {
@@ -1016,8 +1047,16 @@
 
         startScanner() {
             processPosts();
-            const container = document.body;
-            if (!container) return;
+
+            // In comments mode the OP post is already in the DOM at load time, so
+            // processPosts() above will catch it. We still attach a lightweight observer
+            // on the post container in case the page re-renders the link element. We do
+            // NOT observe document.body here — that would watch every comment mutation.
+            const observerTarget = PAGE_MODE === 'comments'
+                ? (document.querySelector(CONFIG.SELECTORS.CONTAINER) || document.body)
+                : document.body;
+
+            if (!observerTarget) return;
 
             this.observer = new MutationObserver((mutations) => {
                 const nodesToProcess = new Set();
@@ -1041,7 +1080,7 @@
                     }, CONFIG.OBSERVER_DEBOUNCE_MS);
                 }
             });
-            this.observer.observe(container, { childList: true, subtree: true });
+            this.observer.observe(observerTarget, { childList: true, subtree: true });
         }
     };
 
