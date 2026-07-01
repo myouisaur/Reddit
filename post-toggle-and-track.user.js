@@ -2,7 +2,7 @@
 // @name         [Reddit] Post Toggle & Track
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      4.6
+// @version      5.0
 // @description  Adds a toggle button to cleanly collapse posts and a tracker for downloaded posts.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -61,6 +61,15 @@
         },
         SELECTORS: {
             CONTAINER: 'div.content',
+            // Ordered fallbacks for the comments-mode observer target. Deliberately
+            // narrower than CONTAINER — old Reddit nests the real sidebar (SIDEBAR)
+            // inside div.content, and observing CONTAINER would also pick up
+            // sidebar-injected widgets (e.g. "recommended posts") that reuse the
+            // same .thing.link markup as real posts.
+            COMMENTS_CONTAINER: ['#siteTable', 'div.sitetable', 'div.content'],
+            // The real Reddit sidebar (search box, subreddit info, recommended
+            // posts). Anything found inside here is never a post we should touch.
+            SIDEBAR: 'div.side',
             POST: '.thing.link'
         },
         CLASSES: {
@@ -677,9 +686,18 @@
             // Shared styles: always injected regardless of page mode.
             // These only affect the OP post (.thing.link) and script-owned elements,
             // so they are safe on both feed and comments pages.
+            //
+            // IMPORTANT: `position: relative` is deliberately NOT set here. Per the
+            // CSS2.1 painting-order spec, positioned elements (even with z-index:
+            // auto) always paint above non-positioned floats, regardless of DOM
+            // order. Old Reddit's sidebar (.side) is a float — so giving the OP
+            // post `position: relative` here would visually stack it above the
+            // sidebar on EVERY page (blocking clicks on comments pages, where no
+            // positioned-ancestor behavior is even needed). It's added back only
+            // in feedOnlyCSS, where it's actually required as an anchor for the
+            // absolutely-positioned collapsed-title element.
             const sharedCSS = `
                 .thing.${CONFIG.CLASSES.PROCESSED} {
-                    position: relative !important;
                     border-left: 3px solid rgba(128, 128, 128, 0.4) !important;
                     padding-left: 6px !important;
                     transition: background-color 0.2s ease !important;
@@ -739,6 +757,10 @@
                 }
 
                 .thing.${CONFIG.CLASSES.PROCESSED} {
+                    /* Anchor for .xiv-collapsed-title's absolute positioning below.
+                       Feed-only: comments mode has no absolutely-positioned children
+                       and must NOT set this (see sharedCSS comment above). */
+                    position: relative !important;
                     overflow: hidden !important;
                 }
 
@@ -929,6 +951,33 @@
         }
     };
 
+    // =========================================================
+    // POST FILTERING & DOM SCOPING UTILITIES
+    // =========================================================
+
+    /**
+     * Returns the first element found from an ordered list of fallback
+     * selectors, or null if none match. Used to keep observer/query targets
+     * resilient to Reddit layout changes without hardcoding a single selector.
+     */
+    function findFirstMatch(selectors) {
+        for (const selector of selectors) {
+            const match = document.querySelector(selector);
+            if (match) return match;
+        }
+        return null;
+    }
+
+    /**
+     * True if the element lives inside the real Reddit sidebar (.side).
+     * The sidebar can contain widgets (e.g. recommended/promoted posts) that
+     * reuse .thing.link markup — this guard stops the script from ever
+     * treating those as real posts, regardless of how they were reached.
+     */
+    function isInsideSidebar(element) {
+        return Boolean(element && element.closest && element.closest(CONFIG.SELECTORS.SIDEBAR));
+    }
+
     function processPosts(root = document) {
         try {
             const posts = [];
@@ -941,10 +990,14 @@
                 posts.push(...children);
             }
 
-            if (!posts.length) return;
+            // Never process anything that lives inside the real sidebar (.side) —
+            // see isInsideSidebar() for why this matters.
+            const validPosts = posts.filter(post => !isInsideSidebar(post));
+
+            if (!validPosts.length) return;
 
             requestAnimationFrame(() => {
-                posts.forEach(post => {
+                validPosts.forEach(post => {
                     // Guard: already fully processed — skip.
                     if (post.querySelector(`.${CONFIG.CLASSES.DOWNLOAD_BTN}`)) {
                         post.classList.add(CONFIG.CLASSES.PROCESSED);
@@ -1050,26 +1103,32 @@
 
             // In comments mode the OP post is already in the DOM at load time, so
             // processPosts() above will catch it. We still attach a lightweight observer
-            // on the post container in case the page re-renders the link element. We do
-            // NOT observe document.body here — that would watch every comment mutation.
+            // in case the page re-renders the link element. We deliberately target the
+            // narrowest available post/comment container (COMMENTS_CONTAINER fallback
+            // chain) rather than div.content, because div.content also wraps the real
+            // sidebar (.side) on old Reddit — observing it would pick up sidebar-only
+            // widgets that reuse post markup. We do NOT observe document.body here —
+            // that would watch every comment mutation.
             const observerTarget = PAGE_MODE === 'comments'
-                ? (document.querySelector(CONFIG.SELECTORS.CONTAINER) || document.body)
+                ? (findFirstMatch(CONFIG.SELECTORS.COMMENTS_CONTAINER) || document.body)
                 : document.body;
 
-            if (!observerTarget) return;
+            if (!observerTarget) {
+                console.warn('[Reddit Post Collapser][Observer] Could not find a container to observe. Post tracking will not work on this page.');
+                return;
+            }
 
             this.observer = new MutationObserver((mutations) => {
                 const nodesToProcess = new Set();
                 for (const mutation of mutations) {
                     for (const node of mutation.addedNodes) {
-                        if (node.nodeType === Node.ELEMENT_NODE) {
-                            if (
-                                node.classList.contains('thing') ||
-                                node.classList.contains('sitetable') ||
-                                (node.id && node.id.startsWith('siteTable'))
-                            ) {
-                                nodesToProcess.add(node);
-                            }
+                        if (node.nodeType !== Node.ELEMENT_NODE || isInsideSidebar(node)) continue;
+                        if (
+                            node.classList.contains('thing') ||
+                            node.classList.contains('sitetable') ||
+                            (node.id && node.id.startsWith('siteTable'))
+                        ) {
+                            nodesToProcess.add(node);
                         }
                     }
                 }
