@@ -2,7 +2,7 @@
 // @name         [Reddit] RES Viewport-Fit Media
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      3.0
+// @version      4.0
 // @description  Automatically sizes expanded media to fit the visible screen space as you scroll.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -85,13 +85,24 @@
     function injectStyles() {
         try {
             GM_addStyle(`
+                /* Native media: perfectly scaled and strictly hardware-accelerated via GPU */
                 img.${CONFIG.MANAGED_CLASS},
-                video.${CONFIG.MANAGED_CLASS},
-                iframe.${CONFIG.MANAGED_CLASS} {
+                video.${CONFIG.MANAGED_CLASS} {
                     max-width: 100% !important;
                     max-height: none !important;
                     object-fit: contain !important;
                     box-sizing: border-box !important;
+                    will-change: height, width !important;
+                    transform: translateZ(0) !important;
+                    backface-visibility: hidden !important;
+                }
+
+                /* iFrames (RedGIFs): Handled strictly via JS height to preserve RES width controls */
+                iframe.${CONFIG.MANAGED_CLASS} {
+                    max-height: none !important;
+                    box-sizing: border-box !important;
+                    will-change: height !important;
+                    transform: translateZ(0) !important;
                 }
             `);
             log.info('Init', 'Scoped CSS injected');
@@ -141,6 +152,16 @@
         getNaturalDimensions: (el) => {
             if (el.tagName === 'IMG') return { w: el.naturalWidth || Infinity, h: el.naturalHeight || Infinity };
             if (el.tagName === 'VIDEO') return { w: el.videoWidth || Infinity, h: el.videoHeight || Infinity };
+
+            if (el.tagName === 'IFRAME') {
+                // RES attaches the source video dimensions as HTML attributes on the iframe
+                const w = parseInt(el.getAttribute('width'), 10);
+                const h = parseInt(el.getAttribute('height'), 10);
+                if (!isNaN(w) && !isNaN(h) && w > 0 && h > 0) {
+                    return { w, h };
+                }
+            }
+
             return { w: Infinity, h: Infinity };
         },
     };
@@ -159,7 +180,8 @@
             let containerWidth = Infinity;
             let widthConstrainedHeight = Infinity;
 
-            if (dims.w !== Infinity && dims.h !== Infinity && dims.w > 0 && dims.h > 0) {
+            // Strict Iframe Isolation: Never calculate horizontal constraints for iframes.
+            if (el.tagName !== 'IFRAME' && dims.w !== Infinity && dims.h !== Infinity && dims.w > 0 && dims.h > 0) {
                 aspectRatio = dims.w / dims.h;
                 const stableParent = State.elementParents.get(el) || container;
                 containerWidth = stableParent.getBoundingClientRect().width;
@@ -194,8 +216,8 @@
 
                     let nextHeight = Utils.lerp(currentHeight, state.targetHeight, CONFIG.LERP_FACTOR);
 
-                    // Smart Clamping for rapid container width shrinking
-                    if (state.aspectRatio > 0 && (nextHeight * state.aspectRatio) > state.containerWidth) {
+                    // Smart Clamping for rapid container width shrinking (Native media only)
+                    if (el.tagName !== 'IFRAME' && state.aspectRatio > 0 && (nextHeight * state.aspectRatio) > state.containerWidth) {
                         nextHeight = state.containerWidth / state.aspectRatio;
                     }
 
@@ -210,15 +232,18 @@
                 }
             }
 
-            // 2. Write Phase: Apply all style changes in a single batch directly (v2.3 behavior)
+            // 2. Write Phase: Apply all style changes in a single batch
             for (const update of updates) {
                 State.displayedHeights.set(update.el, update.renderedHeight);
                 update.el.style.height = `${update.renderedHeight}px`;
 
-                if (update.renderedWidth !== null) {
-                    update.el.style.width = `${update.renderedWidth}px`;
-                } else {
-                    update.el.style.width = 'auto';
+                // Strict Iframe Isolation: We completely ignore width for iframes, handing control to RES.
+                if (update.el.tagName !== 'IFRAME') {
+                    if (update.renderedWidth !== null) {
+                        update.el.style.width = `${update.renderedWidth}px`;
+                    } else {
+                        update.el.style.width = 'auto';
+                    }
                 }
             }
 
@@ -253,7 +278,9 @@
         registerContainer: (container) => {
             const el = Utils.resolveMediaElement(container);
             if (!el) return;
-            if (el.classList.contains(CONFIG.MANAGED_CLASS)) return;
+
+            // Check actual State set, not just DOM class, to prevent false ignores on reattached elements
+            if (State.managedElements.has(el)) return;
 
             el.classList.add(CONFIG.MANAGED_CLASS);
             State.managedElements.add(el);
@@ -284,6 +311,7 @@
         },
 
         purgeDetachedElement: (el) => {
+            el.classList.remove(CONFIG.MANAGED_CLASS); // Actively strip class to prevent freezing on reattach
             State.managedElements.delete(el);
             State.displayedHeights.delete(el);
 
@@ -337,11 +365,13 @@
                         }
                     }
 
-                    // 2. Handle image source swaps
+                    // 2. Handle source swaps across all media types
                     if (
                         mutation.type === 'attributes' &&
                         mutation.attributeName === 'src' &&
-                        mutation.target instanceof HTMLImageElement &&
+                        (mutation.target instanceof HTMLImageElement ||
+                         mutation.target instanceof HTMLVideoElement ||
+                         mutation.target instanceof HTMLIFrameElement) &&
                         mutation.target.classList.contains(CONFIG.MANAGED_CLASS)
                     ) {
                         Core.onMediaSrcChanged(mutation.target);
@@ -448,7 +478,7 @@
             Events.attachListeners();
             document.addEventListener('visibilitychange', Events.onVisibilityChange);
             Events.patchHistory();
-            log.info('Init', `Initialized — v${GM_info?.script?.version || '2.6'}`);
+            log.info('Init', `Initialized — v${GM_info?.script?.version || '3.0'}`);
         } catch (err) {
             log.error('Init', 'Failed during startup', err);
         }
