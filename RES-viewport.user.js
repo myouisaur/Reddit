@@ -2,13 +2,13 @@
 // @name         [Reddit] RES Viewport-Fit Media
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      1.9
+// @version      3.0
 // @description  Automatically sizes expanded media to fit the visible screen space as you scroll.
 // @author       Xiv
 // @match        *://*.reddit.com/*
 // @grant        GM_addStyle
-// @noframes
 // @run-at       document-start
+// @noframes
 // @updateURL    https://myouisaur.github.io/Reddit/RES-viewport.user.js
 // @downloadURL  https://myouisaur.github.io/Reddit/RES-viewport.user.js
 // ==/UserScript==
@@ -17,38 +17,40 @@
     'use strict';
 
     // ─── Duplicate-Init Guard ────────────────────────────────────────────────────
-    if (window.__scriptAlreadyRunning_RES_VF) return;
-    window.__scriptAlreadyRunning_RES_VF = true;
+    if (window.xivAlreadyRunning) return;
+    window.xivAlreadyRunning = true;
 
     // ─── Configuration ───────────────────────────────────────────────────────────
     const CONFIG = {
+        // Feature Flags
         DEBUG: false,
 
-        MANAGED_CLASS: 'res-vf-managed',
+        // CSS Classes
+        MANAGED_CLASS: 'xiv-res-vf-managed',
 
-        VIEWPORT_PADDING: 16,
-        MIN_HEIGHT: 80,
-        LERP_FACTOR: 0.1,
-        SETTLE_THRESHOLD: 0.5,
-        NAVIGATION_DELAY_MS: 200,
-
+        // Selectors
         CONTAINER_SELECTOR: '.res-media-independent',
         EXPANDO_SELECTOR: '.res-expando-box',
+        OBSERVATION_ROOT_SELECTOR: '.sitetable',
 
-        // All bottom chrome elements whose height is subtracted from available space.
         BOTTOM_CHROME_SELECTORS: [
             '.res-caption',
             '.res-expando-siteAttribution',
             '.res-iframe-expando-drag-handle',
         ],
-
-        // <img> elements inside these containers are RES UI — never treat as media.
         CHROME_SELECTORS: [
             '.res-iframe-expando-drag-handle',
             '.res-expando-siteAttribution',
             '.res-media-controls',
             'cite',
         ],
+
+        // Timing & Math
+        VIEWPORT_PADDING: 16,
+        MIN_HEIGHT: 80,
+        LERP_FACTOR: 0.1,
+        SETTLE_THRESHOLD: 0.5,
+        NAVIGATION_DELAY_MS: 200,
     };
 
     // ─── Logger ──────────────────────────────────────────────────────────────────
@@ -68,22 +70,28 @@
     const State = {
         rafHandle: null,
         dirty: false,
-        displayedHeights: new WeakMap(), // Current rendered height for lerp interpolation
-        observer: null,
+
+        // Element Caching & Memory Management
+        managedElements: new Set(),
+        displayedHeights: new WeakMap(),
+        elementParents: new WeakMap(),
+
+        // Observers
+        mutationObserver: null,
+        resizeObserver: null,
     };
 
     // ─── Scoped CSS ──────────────────────────────────────────────────────────────
     function injectStyles() {
         try {
             GM_addStyle(`
-                img.${CONFIG.MANAGED_CLASS} {
-                    width: auto !important;
-                    max-width: 100% !important;
-                    max-height: none !important;
-                }
+                img.${CONFIG.MANAGED_CLASS},
                 video.${CONFIG.MANAGED_CLASS},
                 iframe.${CONFIG.MANAGED_CLASS} {
+                    max-width: 100% !important;
                     max-height: none !important;
+                    object-fit: contain !important;
+                    box-sizing: border-box !important;
                 }
             `);
             log.info('Init', 'Scoped CSS injected');
@@ -130,51 +138,89 @@
             return null;
         },
 
-        getNaturalHeight: (el) => {
-            if (el.tagName === 'IMG') return el.naturalHeight || Infinity;
-            if (el.tagName === 'VIDEO') return el.videoHeight || Infinity;
-            return Infinity;
+        getNaturalDimensions: (el) => {
+            if (el.tagName === 'IMG') return { w: el.naturalWidth || Infinity, h: el.naturalHeight || Infinity };
+            if (el.tagName === 'VIDEO') return { w: el.videoWidth || Infinity, h: el.videoHeight || Infinity };
+            return { w: Infinity, h: Infinity };
         },
     };
 
     // ─── Core Logic ──────────────────────────────────────────────────────────────
     const Core = {
-        computeTargetHeight: (el, container) => {
+        computeTargetState: (el, container) => {
             const rect = el.getBoundingClientRect();
             const effectiveTop = Math.max(rect.top, 0);
             const bottomChrome = Utils.getBottomChromeHeight(container);
-            const available = window.innerHeight - effectiveTop - bottomChrome - CONFIG.VIEWPORT_PADDING;
 
-            return Math.max(CONFIG.MIN_HEIGHT, Math.min(available, Utils.getNaturalHeight(el)));
+            const availableVertical = window.innerHeight - effectiveTop - bottomChrome - CONFIG.VIEWPORT_PADDING;
+            const dims = Utils.getNaturalDimensions(el);
+
+            let aspectRatio = 0;
+            let containerWidth = Infinity;
+            let widthConstrainedHeight = Infinity;
+
+            if (dims.w !== Infinity && dims.h !== Infinity && dims.w > 0 && dims.h > 0) {
+                aspectRatio = dims.w / dims.h;
+                const stableParent = State.elementParents.get(el) || container;
+                containerWidth = stableParent.getBoundingClientRect().width;
+                widthConstrainedHeight = containerWidth / aspectRatio;
+            }
+
+            const maxAllowedHeight = Math.min(availableVertical, dims.h, widthConstrainedHeight);
+            const targetHeight = Math.max(CONFIG.MIN_HEIGHT, maxAllowedHeight);
+
+            return { targetHeight, containerWidth, aspectRatio };
         },
 
         animationStep: () => {
             State.rafHandle = null;
             let anyUnsettled = false;
 
-            const elements = document.querySelectorAll(
-                `img.${CONFIG.MANAGED_CLASS}, video.${CONFIG.MANAGED_CLASS}, iframe.${CONFIG.MANAGED_CLASS}`
-            );
+            const updates = [];
 
-            elements.forEach((el) => {
+            // 1. Read Phase: Calculate all target states without modifying the DOM
+            for (const el of State.managedElements) {
+                if (!el.isConnected) {
+                    Core.purgeDetachedElement(el);
+                    continue;
+                }
+
                 try {
                     const container = el.closest(CONFIG.CONTAINER_SELECTOR);
-                    if (!container) return;
+                    if (!container) continue;
 
-                    const target = Core.computeTargetHeight(el, container);
-                    const current = State.displayedHeights.get(el) ?? target;
-                    const next = Utils.lerp(current, target, CONFIG.LERP_FACTOR);
-                    const settled = Math.abs(next - target) < CONFIG.SETTLE_THRESHOLD;
-                    const rendered = settled ? target : next;
+                    const state = Core.computeTargetState(el, container);
+                    const currentHeight = State.displayedHeights.get(el) ?? state.targetHeight;
 
-                    State.displayedHeights.set(el, rendered);
-                    el.style.height = `${rendered}px`;
+                    let nextHeight = Utils.lerp(currentHeight, state.targetHeight, CONFIG.LERP_FACTOR);
 
+                    // Smart Clamping for rapid container width shrinking
+                    if (state.aspectRatio > 0 && (nextHeight * state.aspectRatio) > state.containerWidth) {
+                        nextHeight = state.containerWidth / state.aspectRatio;
+                    }
+
+                    const settled = Math.abs(nextHeight - state.targetHeight) < CONFIG.SETTLE_THRESHOLD;
+                    const renderedHeight = settled ? state.targetHeight : nextHeight;
+                    const renderedWidth = state.aspectRatio > 0 ? (renderedHeight * state.aspectRatio) : null;
+
+                    updates.push({ el, renderedHeight, renderedWidth });
                     if (!settled) anyUnsettled = true;
                 } catch (err) {
-                    log.error('Animation', 'Error processing element in animation loop', err);
+                    log.error('Animation', 'Error calculating target state', err);
                 }
-            });
+            }
+
+            // 2. Write Phase: Apply all style changes in a single batch directly (v2.3 behavior)
+            for (const update of updates) {
+                State.displayedHeights.set(update.el, update.renderedHeight);
+                update.el.style.height = `${update.renderedHeight}px`;
+
+                if (update.renderedWidth !== null) {
+                    update.el.style.width = `${update.renderedWidth}px`;
+                } else {
+                    update.el.style.width = 'auto';
+                }
+            }
 
             if (anyUnsettled || State.dirty) {
                 State.dirty = false;
@@ -206,14 +252,18 @@
 
         registerContainer: (container) => {
             const el = Utils.resolveMediaElement(container);
-            if (!el) {
-                log.info('Registration', 'Container found but media element not ready yet');
-                return;
-            }
-
+            if (!el) return;
             if (el.classList.contains(CONFIG.MANAGED_CLASS)) return;
 
             el.classList.add(CONFIG.MANAGED_CLASS);
+            State.managedElements.add(el);
+
+            const stableParent = el.closest(CONFIG.EXPANDO_SELECTOR) || container;
+            State.elementParents.set(el, stableParent);
+
+            if (State.resizeObserver) {
+                State.resizeObserver.observe(stableParent);
+            }
 
             const needsLoad =
                 (el.tagName === 'IMG' && (!el.complete || el.naturalHeight === 0)) ||
@@ -230,7 +280,19 @@
                 Core.wakeLoop();
             }
 
-            log.info('Registration', `Registered ${el.tagName} ${el.src?.slice(-40) || ''}`);
+            log.info('Registration', `Registered ${el.tagName}`);
+        },
+
+        purgeDetachedElement: (el) => {
+            State.managedElements.delete(el);
+            State.displayedHeights.delete(el);
+
+            const stableParent = State.elementParents.get(el);
+            if (stableParent && State.resizeObserver) {
+                State.resizeObserver.unobserve(stableParent);
+            }
+            State.elementParents.delete(el);
+            log.info('Cleanup', 'Purged detached media element and unobserved parent.');
         },
 
         scanForContainers: (root = document) => {
@@ -244,18 +306,38 @@
 
     // ─── Observers & Listeners ───────────────────────────────────────────────────
     const Events = {
-        startObserver: () => {
-            if (State.observer) return;
+        startObservers: () => {
+            if (!State.resizeObserver) {
+                State.resizeObserver = new ResizeObserver(() => Core.wakeLoop());
+            }
 
-            const root = document.querySelector('.sitetable') || document.body;
+            if (State.mutationObserver) return;
+
+            const root = document.querySelector(CONFIG.OBSERVATION_ROOT_SELECTOR) || document.body;
             if (!root) {
                 log.warn('Observer', 'Observation root not found.');
                 return;
             }
 
-            State.observer = new MutationObserver((mutations) => {
+            State.mutationObserver = new MutationObserver((mutations) => {
                 for (const mutation of mutations) {
 
+                    // 1. Handle element removals for strict garbage collection
+                    if (mutation.removedNodes.length > 0) {
+                        for (const node of mutation.removedNodes) {
+                            if (!(node instanceof Element)) continue;
+
+                            const removedManaged = node.matches(`.${CONFIG.MANAGED_CLASS}`)
+                                ? [node]
+                                : node.querySelectorAll(`.${CONFIG.MANAGED_CLASS}`);
+
+                            for (const el of removedManaged) {
+                                Core.purgeDetachedElement(el);
+                            }
+                        }
+                    }
+
+                    // 2. Handle image source swaps
                     if (
                         mutation.type === 'attributes' &&
                         mutation.attributeName === 'src' &&
@@ -266,30 +348,31 @@
                         continue;
                     }
 
-                    if (mutation.type !== 'childList') continue;
+                    // 3. Handle newly added content
+                    if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+                        for (const node of mutation.addedNodes) {
+                            if (!(node instanceof Element)) continue;
 
-                    for (const node of mutation.addedNodes) {
-                        if (!(node instanceof Element)) continue;
+                            if (node.matches(CONFIG.CONTAINER_SELECTOR)) {
+                                Core.registerContainer(node);
+                                continue;
+                            }
 
-                        if (node.matches(CONFIG.CONTAINER_SELECTOR)) {
-                            Core.registerContainer(node);
-                            continue;
-                        }
+                            const parentContainer = node.closest(CONFIG.CONTAINER_SELECTOR);
+                            if (parentContainer) {
+                                Core.registerContainer(parentContainer);
+                                continue;
+                            }
 
-                        const parentContainer = node.closest?.(CONFIG.CONTAINER_SELECTOR);
-                        if (parentContainer) {
-                            Core.registerContainer(parentContainer);
-                            continue;
-                        }
-
-                        if (node.querySelector?.(CONFIG.CONTAINER_SELECTOR)) {
-                            Core.scanForContainers(node);
+                            if (node.querySelector(CONFIG.CONTAINER_SELECTOR)) {
+                                Core.scanForContainers(node);
+                            }
                         }
                     }
                 }
             });
 
-            State.observer.observe(root, {
+            State.mutationObserver.observe(root, {
                 childList: true,
                 subtree: true,
                 attributes: true,
@@ -360,12 +443,12 @@
     function init() {
         try {
             injectStyles();
+            Events.startObservers();
             Core.scanForContainers();
-            Events.startObserver();
             Events.attachListeners();
             document.addEventListener('visibilitychange', Events.onVisibilityChange);
             Events.patchHistory();
-            log.info('Init', `Initialized — v${GM_info?.script?.version || '1.7'}`);
+            log.info('Init', `Initialized — v${GM_info?.script?.version || '2.6'}`);
         } catch (err) {
             log.error('Init', 'Failed during startup', err);
         }
