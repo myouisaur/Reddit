@@ -2,7 +2,7 @@
 // @name         [Reddit] Post Filter
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      7.0
+// @version      7.01
 // @description  Filters Reddit posts dynamically with customizable rules for scores, dates, subreddits, keywords, and media types.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -214,8 +214,8 @@
         const svgNS = "http://www.w3.org/2000/svg";
         const svg = document.createElementNS(svgNS, "svg");
         svg.setAttribute("viewBox", "0 0 24 24");
-        svg.setAttribute("width", "1.5em");
-        svg.setAttribute("height", "1.5em");
+        svg.setAttribute("width", "1.4em");
+        svg.setAttribute("height", "1.4em");
         svg.setAttribute("fill", "none");
         svg.setAttribute("stroke", "currentColor");
         svg.setAttribute("stroke-width", "2");
@@ -875,7 +875,9 @@
 
             .xiv-type-icon {
                 display: inline-block;
-                vertical-align: -0.35em;
+                vertical-align: middle;
+                position: relative;
+                top: -1px;
                 margin-left: 4px;
                 color: inherit;
             }
