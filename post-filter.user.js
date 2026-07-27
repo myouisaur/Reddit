@@ -2,7 +2,7 @@
 // @name         [Reddit] Post Filter
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      7.01
+// @version      7.2
 // @description  Filters Reddit posts dynamically with customizable rules for scores, dates, subreddits, keywords, and media types.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -37,7 +37,13 @@
         DEFAULT_MAX_SCORE: 10,
         SCROLL_MARGIN: '400px',
 
-        // Media Parsing Hosts
+        // Media Parsing Extensions (Checked First)
+        MEDIA_EXTENSIONS: {
+            IMAGES: ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.avif'],
+            VIDEOS: ['.gifv', '.gif', '.mp4', '.webm', '.mkv', '.mov', '.avi', '.m4v']
+        },
+
+        // Media Parsing Hosts (Fallback)
         MEDIA_HOSTS: {
             IMAGES: [
                 'reddit.com/gallery', 'i.redd.it', 'preview.redd.it',
@@ -417,10 +423,40 @@
             if (isTextPost) {
                 mediaType = 'text';
             } else if (href) {
-                if (CONFIG.MEDIA_HOSTS.IMAGES.some(host => href.includes(host))) {
-                    mediaType = 'image';
-                } else if (CONFIG.MEDIA_HOSTS.VIDEOS.some(host => href.includes(host))) {
-                    mediaType = 'video';
+                let extension = '';
+
+                try {
+                    const urlObj = new URL(href);
+                    const pathname = urlObj.pathname.toLowerCase();
+                    const extMatch = pathname.match(/\.([a-z0-9]+)$/i);
+                    if (extMatch) {
+                        extension = `.${extMatch[1]}`;
+                    }
+
+                    // Step 1: Explicit Extension Checking (Overrides Host)
+                    if (extension) {
+                        if (CONFIG.MEDIA_EXTENSIONS.VIDEOS.includes(extension)) {
+                            mediaType = 'video';
+                        } else if (CONFIG.MEDIA_EXTENSIONS.IMAGES.includes(extension)) {
+                            mediaType = 'image';
+                        }
+                    }
+
+                    // Step 2: Fallback to Domain Matching if extension isn't explicitly defined
+                    if (mediaType === 'other' || !extension) {
+                        if (CONFIG.MEDIA_HOSTS.VIDEOS.some(host => href.includes(host))) {
+                            mediaType = 'video';
+                        } else if (CONFIG.MEDIA_HOSTS.IMAGES.some(host => href.includes(host))) {
+                            mediaType = 'image';
+                        }
+                    }
+                } catch (e) {
+                    // Fail-safe simple string search if URL parsing throws
+                    if (CONFIG.MEDIA_HOSTS.VIDEOS.some(host => href.includes(host))) {
+                        mediaType = 'video';
+                    } else if (CONFIG.MEDIA_HOSTS.IMAGES.some(host => href.includes(host))) {
+                        mediaType = 'image';
+                    }
                 }
             }
 
