@@ -2,7 +2,7 @@
 // @name         [Reddit] Post Filter
 // @namespace    https://github.com/myouisaur/Reddit
 // @icon         https://www.reddit.com/favicon.ico
-// @version      7.2
+// @version      7.5
 // @description  Filters Reddit posts dynamically with customizable rules for scores, dates, subreddits, keywords, and media types.
 // @author       Xiv
 // @match        *://*.reddit.com/*
@@ -35,6 +35,7 @@
 
         // Limits
         DEFAULT_MAX_SCORE: 10,
+        SCORE_STEP: 100,
         SCROLL_MARGIN: '400px',
 
         // Media Parsing Extensions (Checked First)
@@ -113,8 +114,18 @@
             ]
         },
 
+        // UI Text
+        TEXT: {
+            STEP_DOWN_MIN: 'Decrease Min score to the previous hundred',
+            STEP_UP_MIN: 'Increase Min score to the next hundred',
+            STEP_DOWN_MAX: 'Decrease Max score to the previous hundred',
+            STEP_UP_MAX: 'Increase Max score to the next hundred'
+        },
+
         // Assets
         ASSETS: {
+            SVG_CHEVRON_DOWN: 'M5 9l7 7 7-7',
+            SVG_CHEVRON_UP: 'M5 15l7-7 7 7',
             SVG_LOCK_PATH: "M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h1.9c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z",
             TYPE_PATHS: {
                 text: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8",
@@ -214,6 +225,30 @@
             }
         });
         return element;
+    }
+
+    // Snaps to the next/previous multiple of `step` in the given direction.
+    // e.g. stepToMultiple(563, 100, 1) -> 600 | stepToMultiple(563, 100, -1) -> 500 | stepToMultiple(600, 100, -1) -> 500
+    function stepToMultiple(value, step, direction) {
+        return direction > 0
+            ? (Math.floor(value / step) + 1) * step
+            : (Math.ceil(value / step) - 1) * step;
+    }
+
+    function createChevronIcon(pathData) {
+        const svgNS = "http://www.w3.org/2000/svg";
+        const svg = document.createElementNS(svgNS, "svg");
+        svg.setAttribute("viewBox", "0 0 24 24");
+        svg.setAttribute("fill", "none");
+        svg.setAttribute("stroke", "currentColor");
+        svg.setAttribute("stroke-width", "3");
+        svg.setAttribute("stroke-linecap", "round");
+        svg.setAttribute("stroke-linejoin", "round");
+        svg.setAttribute("aria-hidden", "true");
+        const path = document.createElementNS(svgNS, "path");
+        path.setAttribute("d", pathData);
+        svg.appendChild(path);
+        return svg;
     }
 
     function createTypeIcon(type) {
@@ -924,18 +959,41 @@
             .xiv-row { display: flex; flex-direction: column; margin-bottom: 0.75rem; gap: 0.25rem; }
 
             .xiv-score-container { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.75rem; }
-            .xiv-score-labels { display: flex; justify-content: space-between; align-items: center; padding: 0; }
-            .xiv-slider-row { display: flex; align-items: center; gap: 8px; }
+            /* One shared grid so each textbox column is exactly as wide as the label + chevrons above it */
+            .xiv-score-grid {
+                display: grid; grid-template-columns: max-content 1fr max-content;
+                align-items: center; column-gap: 0.5rem; row-gap: 0.25rem;
+            }
+            .xiv-score-label-group { position: relative; display: flex; align-items: center; gap: 0.1rem; }
+            /* Lock sits outside the group so locking never changes the Max column width */
+            .xiv-lock-wrap { position: absolute; right: 100%; top: 50%; transform: translateY(-50%); margin-right: 0.15rem; }
+            /* !important: the host site styles bare <button> elements with boxes/borders */
+            button.xiv-step-btn {
+                -webkit-appearance: none !important; appearance: none !important;
+                display: inline-flex; align-items: center; justify-content: center;
+                background: none !important; border: none !important; box-shadow: none !important;
+                margin: 0 !important; min-width: 0 !important; min-height: 0 !important;
+                width: auto !important; height: auto !important;
+                padding: clamp(0.15rem, 0.6vw, 0.3rem) !important;
+                color: inherit !important; opacity: 0.35; cursor: pointer; line-height: 0;
+                border-radius: 3px; transition: opacity 0.2s;
+            }
+            button.xiv-step-btn svg { display: block; width: 0.6rem; height: 0.6rem; }
+            button.xiv-step-btn:hover,
+            button.xiv-step-btn:active { opacity: 0.9; background: none !important; border: none !important; box-shadow: none !important; }
+            button.xiv-step-btn:focus-visible { opacity: 1; outline: 2px solid currentColor; outline-offset: 1px; background: none !important; box-shadow: none !important; }
             .xiv-score-input {
-                width: 48px; background-color: transparent; color: inherit;
+                /* width 0 + min-width 100%: the box fills its grid column without stretching it */
+                width: 0; min-width: 100%; box-sizing: border-box;
+                background-color: transparent; color: inherit;
                 border: 1px solid currentColor; opacity: 0.5; border-radius: 3px;
-                padding: 4px; text-align: center; font-size: 0.8rem; font-family: inherit;
+                padding: 4px 2px; text-align: center; font-size: 0.8rem; font-family: inherit;
                 -moz-appearance: textfield; transition: opacity 0.2s;
             }
             .xiv-score-input::-webkit-outer-spin-button,
             .xiv-score-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
             .xiv-score-input:focus { opacity: 1; outline: none; }
-            .xiv-range-wrapper { position: relative; flex: 1; height: 20px; display: flex; align-items: center; color: inherit; cursor: pointer; }
+            .xiv-range-wrapper { position: relative; min-width: 0; height: 20px; display: flex; align-items: center; color: inherit; cursor: pointer; }
             .xiv-track-bg { position: absolute; width: 100%; height: 4px; background-color: currentColor; opacity: 0.3; border-radius: 2px; top: 50%; transform: translateY(-50%); pointer-events: none; }
             .xiv-track-fill { position: absolute; height: 4px; background-color: currentColor; opacity: 0.85; border-radius: 2px; top: 50%; transform: translateY(-50%); pointer-events: none; }
             .xiv-range-input { position: absolute; width: 100%; -webkit-appearance: none; background: transparent; pointer-events: none; margin: 0; top: 50%; transform: translateY(-50%); color: inherit; }
@@ -1250,22 +1308,41 @@
             return el('div', { className: 'xiv-inline-divider', style: customStyle, textContent: text });
         };
 
-        const onMinChange = (e) => {
-            let val = parseInt(e.target.value, 10) || 0;
-            const currentMax = state.isMaxScoreLocked ? state.maxScore : state.highestObservedScore;
-            val = Math.min(val, currentMax);
-            state.minScore = Math.max(0, val);
+        const getCurrentMax = () => state.isMaxScoreLocked ? state.maxScore : state.highestObservedScore;
+
+        const setMinScore = (val) => {
+            state.minScore = Math.max(0, Math.min(val, getCurrentMax()));
             syncScoreUI();
             queueFilter(true);
         };
 
-        const onMaxChange = (e) => {
-            let val = parseInt(e.target.value, 10) || 0;
-            val = Math.max(val, state.minScore);
-            state.maxScore = val;
+        const setMaxScore = (val) => {
+            state.maxScore = Math.max(val, state.minScore);
             state.isMaxScoreLocked = true;
             syncScoreUI();
             queueFilter(true);
+        };
+
+        const onMinChange = (e) => setMinScore(parseInt(e.target.value, 10) || 0);
+        const onMaxChange = (e) => setMaxScore(parseInt(e.target.value, 10) || 0);
+
+        // Steppers clamp to the opposite bound; no-op presses skip the update (and don't lock Max needlessly)
+        const stepMinScore = (direction) => {
+            const next = Math.max(0, Math.min(stepToMultiple(state.minScore, CONFIG.SCORE_STEP, direction), getCurrentMax()));
+            if (next !== state.minScore) setMinScore(next);
+        };
+
+        const stepMaxScore = (direction) => {
+            const current = getCurrentMax();
+            const next = Math.max(stepToMultiple(current, CONFIG.SCORE_STEP, direction), state.minScore);
+            if (next !== current) setMaxScore(next);
+        };
+
+        const createStepButton = (pathData, label, onClick) => {
+            const btn = el('button', { type: 'button', className: 'xiv-step-btn', title: label, onClick });
+            btn.setAttribute('aria-label', label);
+            btn.appendChild(createChevronIcon(pathData));
+            return btn;
         };
 
         const inputMinScore = el('input', { id: CONFIG.IDS.MIN_INPUT, type: 'number', className: 'xiv-score-input', min: 0, value: state.minScore, onInput: onMinChange });
@@ -1326,6 +1403,7 @@
 
         const lockIconWrapper = el('span', {
             id: CONFIG.IDS.LOCK_ICON,
+            className: 'xiv-lock-wrap',
             style: 'display: none; cursor: pointer; align-items: center;',
             title: 'Click to unlock Max Score',
             onClick: () => {
@@ -1337,18 +1415,25 @@
         });
         lockIconWrapper.appendChild(lockSvg);
 
-        const maxLabelContainer = el('div', { style: 'display: flex; align-items: center; gap: 2px;' }, [
+        const minLabelContainer = el('div', { className: 'xiv-score-label-group' }, [
+            createStepButton(CONFIG.ASSETS.SVG_CHEVRON_DOWN, CONFIG.TEXT.STEP_DOWN_MIN, () => stepMinScore(-1)),
+            el('label', { className: 'xiv-label', style: 'margin: 0;', textContent: 'MIN' }),
+            createStepButton(CONFIG.ASSETS.SVG_CHEVRON_UP, CONFIG.TEXT.STEP_UP_MIN, () => stepMinScore(1))
+        ]);
+
+        const maxLabelContainer = el('div', { className: 'xiv-score-label-group' }, [
             lockIconWrapper,
-            el('label', { className: 'xiv-label', style: 'margin: 0;', textContent: 'MAX' })
+            createStepButton(CONFIG.ASSETS.SVG_CHEVRON_DOWN, CONFIG.TEXT.STEP_DOWN_MAX, () => stepMaxScore(-1)),
+            el('label', { className: 'xiv-label', style: 'margin: 0;', textContent: 'MAX' }),
+            createStepButton(CONFIG.ASSETS.SVG_CHEVRON_UP, CONFIG.TEXT.STEP_UP_MAX, () => stepMaxScore(1))
         ]);
 
         const scoreContainer = el('div', { className: 'xiv-score-container' }, [
             createInlineDivider('Score'),
-            el('div', { className: 'xiv-score-labels' }, [
-                el('label', { className: 'xiv-label', style: 'margin: 0;', textContent: 'MIN' }),
-                maxLabelContainer
-            ]),
-            el('div', { className: 'xiv-slider-row' }, [
+            el('div', { className: 'xiv-score-grid' }, [
+                minLabelContainer,
+                el('div'),
+                maxLabelContainer,
                 inputMinScore,
                 rangeWrapper,
                 inputMaxScore
